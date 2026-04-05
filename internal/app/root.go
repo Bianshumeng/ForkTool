@@ -25,6 +25,7 @@ func NewRootCommand() *cobra.Command {
 		cli.newManifestCommand(),
 		cli.newBaselineCommand(),
 		cli.newScanCommand(),
+		cli.newReportCommand(),
 	)
 
 	return root

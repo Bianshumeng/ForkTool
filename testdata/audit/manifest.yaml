@@ -1,0 +1,87 @@
+version: 1
+repoKind: sub2api
+features:
+  - id: claude-messages-mainchain
+    name: Claude /messages 主链
+    riskLevel: critical
+    languages: [go]
+    chain:
+      symbols:
+        - file: backend/internal/service/gateway_service.go
+          functions:
+            - GenerateSessionHash
+            - forwardHeaders
+        - file: backend/internal/service/gateway_request.go
+          functions:
+            - NormalizeSessionUserAgent
+    semanticRules:
+      - claude-session-hash-normalization
+      - http-header-wire-casing
+    decisions:
+      default: official-required
+
+  - id: claude-count-tokens
+    name: Claude count_tokens 主链
+    riskLevel: critical
+    languages: [go]
+    chain:
+      symbols:
+        - file: backend/internal/service/gateway_service.go
+          functions:
+            - ForwardCountTokens
+            - buildCountTokensRequest
+    semanticRules:
+      - claude-count-tokens-beta-suffix
+    decisions:
+      default: official-required
+
+  - id: openai-responses-compact
+    name: OpenAI Responses compact
+    riskLevel: critical
+    languages: [go]
+    chain:
+      routes:
+        - pathPattern: "/v1/responses/compact"
+      symbols:
+        - file: backend/internal/service/openai_gateway_service.go
+          functions:
+            - buildUpstreamRequest
+            - isolateOpenAISessionID
+            - normalizeOpenAIPassthroughOAuthBody
+      tests:
+        - backend/internal/service/openai_gateway_service_session_isolation_test.go
+    semanticRules:
+      - openai-compact-path-suffix
+      - openai-session-isolation
+      - openai-passthrough-body-normalization
+      - test-file-presence
+    decisions:
+      default: official-required
+
+  - id: gemini-messages-compat
+    name: Gemini messages compat
+    riskLevel: high
+    languages: [go]
+    chain:
+      symbols:
+        - file: backend/internal/service/gemini_messages_compat_service.go
+          functions:
+            - Forward
+    semanticRules:
+      - gemini-upstream-model-preserved
+    decisions:
+      default: official-required
+
+  - id: gemini-native-v1beta
+    name: Gemini native v1beta
+    riskLevel: high
+    languages: [go]
+    chain:
+      symbols:
+        - file: backend/internal/service/gemini_session.go
+          functions:
+            - GenerateGeminiPrefixHash
+    semanticRules:
+      - gemini-digest-prefix-ua-normalization
+    decisions:
+      default: official-required

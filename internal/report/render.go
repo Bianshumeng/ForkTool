@@ -77,8 +77,10 @@ func PopulateSummary(report *model.AuditReport) {
 
 	if summary.CriticalFindings > 0 || summary.HighFindings > 0 {
 		summary.RecommendedAction = "Review high-risk findings before syncing official changes."
+	} else if summary.FeaturesScanned > 0 {
+		summary.RecommendedAction = "No high-risk drift detected by the currently supported deterministic rules."
 	} else {
-		summary.RecommendedAction = "Continue implementing deterministic rules on top of the current discovery skeleton."
+		summary.RecommendedAction = "No features were scanned."
 	}
 
 	report.Summary = summary

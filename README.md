@@ -102,9 +102,23 @@ go run ./cmd/forktool scan feature \
 - 可选 baseline 校验
 - Go 节点抽取
 - 统一 IR 组装
+- 决策文件加载
+- 首批确定性规则执行
 - Markdown / JSON 报告输出
 
-当前 `scan feature` 还不会输出真正的 semantic finding；这部分属于阶段 3 的规则引擎。
+### 6. 批量扫描一个 release
+
+```bash
+go run ./cmd/forktool scan release \
+  --manifest ./examples/sub2api.manifest.example.yaml \
+  --local E:/path/to/local-fork \
+  --official E:/path/to/official-repo \
+  --critical-only \
+  --format md \
+  --format json
+```
+
+这会对当前 manifest 中选中的多条 feature 生成一份聚合报告。
 
 ## 当前已实现命令
 
@@ -113,8 +127,11 @@ forktool version
 forktool init
 forktool doctor
 forktool manifest validate
+forktool manifest list
 forktool baseline verify
 forktool scan feature
+forktool scan release
+forktool report render
 ```
 
 ## 当前目录结构
@@ -157,8 +174,24 @@ ForkTool 当前实现仍严格服从文档主线：
 - `manifest` 负责定义功能链，而不是只罗列文件
 - `统一 IR` 负责吸收语言差异，承接规则层和报告层
 - `语言适配器` 目前优先做 Go
-- `规则引擎` 还未落地具体 semantic rule
+- `规则引擎` 当前已落地首批确定性规则
 - `报告输出` 已支持 Markdown / JSON
+
+## 当前已支持的确定性规则
+
+当前规则引擎优先实现高确定性、可落地、可测试的规则：
+
+- `claude-count-tokens-beta-suffix`
+- `claude-session-hash-normalization`
+- `http-header-wire-casing`
+- `openai-compact-path-suffix`
+- `openai-session-isolation`
+- `openai-passthrough-body-normalization`
+- `gemini-upstream-model-preserved`
+- `gemini-digest-prefix-ua-normalization`
+- `test-file-presence`
+
+这些规则当前主要基于 Go 源码抽取结果和目标文件文本证据进行判断，目标是先把阶段 3 的 MVP 做到可用，再逐步补深。
 
 ## 文档导航
 

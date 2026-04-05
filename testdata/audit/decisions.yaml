@@ -1,0 +1,10 @@
+version: 1
+decisions:
+  - featureId: openai-responses-compact
+    scope: test-file-presence
+    decision: test-missing
+    reason: 官方 session isolation 测试必须补齐
+  - featureId: claude-messages-mainchain
+    scope: "*"
+    decision: official-required
+    reason: Claude 主链必须回官方

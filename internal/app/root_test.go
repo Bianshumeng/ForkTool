@@ -34,6 +34,15 @@ func TestManifestValidateCommand(t *testing.T) {
 	require.Contains(t, stdout, `"valid": true`)
 }
 
+func TestManifestListCommand(t *testing.T) {
+	manifestPath := filepath.Join(projectRoot(t), "testdata", "audit", "manifest.yaml")
+
+	stdout, _, err := executeCommand(t, "", "manifest", "list", "--path", manifestPath)
+	require.NoError(t, err)
+	require.Contains(t, stdout, `"featureCount": 5`)
+	require.Contains(t, stdout, `"id": "claude-count-tokens"`)
+}
+
 func TestScanFeatureCommandWritesPlaceholderReport(t *testing.T) {
 	workdir := t.TempDir()
 	manifestPath := filepath.Join(projectRoot(t), "examples", "sub2api.manifest.example.yaml")
@@ -74,8 +83,101 @@ func TestScanFeatureCommandUsesGoASTDiscovery(t *testing.T) {
 
 	reportContent, readErr := os.ReadFile(filepath.Join(outputDir, "report.json"))
 	require.NoError(t, readErr)
-	require.Contains(t, string(reportContent), `"status": "discovered"`)
+	require.Contains(t, string(reportContent), `"status": "aligned"`)
 	require.Contains(t, string(reportContent), `"source": "go-ast"`)
+}
+
+func TestScanFeatureCommandReturnsFindingsForAuditFixture(t *testing.T) {
+	workdir := t.TempDir()
+	root := projectRoot(t)
+	manifestPath := filepath.Join(root, "testdata", "audit", "manifest.yaml")
+	localPath := filepath.Join(root, "testdata", "audit", "local")
+	officialPath := filepath.Join(root, "testdata", "audit", "official")
+	decisionPath := filepath.Join(root, "testdata", "audit", "decisions.yaml")
+	outputDir := filepath.Join(workdir, "audit-feature")
+
+	stdout, _, err := executeCommand(t, workdir,
+		"scan", "feature",
+		"--feature", "openai-responses-compact",
+		"--manifest", manifestPath,
+		"--decision-file", decisionPath,
+		"--local", localPath,
+		"--official", officialPath,
+		"--format", "json",
+		"--out", outputDir,
+	)
+	require.Error(t, err)
+	require.Equal(t, ExitFindings, ExitCode(err))
+	require.Contains(t, stdout, `"findingCount": 4`)
+
+	reportContent, readErr := os.ReadFile(filepath.Join(outputDir, "report.json"))
+	require.NoError(t, readErr)
+	require.Contains(t, string(reportContent), `"status": "drifted"`)
+	require.Contains(t, string(reportContent), `"decisionTag": "test-missing"`)
+	require.Contains(t, string(reportContent), `"title": "compact 请求未透传 /compact suffix"`)
+}
+
+func TestScanReleaseCommandAggregatesFindings(t *testing.T) {
+	workdir := t.TempDir()
+	root := projectRoot(t)
+	manifestPath := filepath.Join(root, "testdata", "audit", "manifest.yaml")
+	localPath := filepath.Join(root, "testdata", "audit", "local")
+	officialPath := filepath.Join(root, "testdata", "audit", "official")
+	decisionPath := filepath.Join(root, "testdata", "audit", "decisions.yaml")
+	outputDir := filepath.Join(workdir, "audit-release")
+
+	stdout, _, err := executeCommand(t, workdir,
+		"scan", "release",
+		"--manifest", manifestPath,
+		"--decision-file", decisionPath,
+		"--local", localPath,
+		"--official", officialPath,
+		"--critical-only",
+		"--format", "json",
+		"--out", outputDir,
+	)
+	require.Error(t, err)
+	require.Equal(t, ExitFindings, ExitCode(err))
+	require.Contains(t, stdout, `"featuresScanned": 3`)
+	require.Contains(t, stdout, `"findingCount": 7`)
+
+	reportContent, readErr := os.ReadFile(filepath.Join(outputDir, "report.json"))
+	require.NoError(t, readErr)
+	require.Contains(t, string(reportContent), `"criticalFindings": 2`)
+	require.Contains(t, string(reportContent), `"highFindings": 5`)
+}
+
+func TestReportRenderCommandWritesMarkdown(t *testing.T) {
+	workdir := t.TempDir()
+	manifestPath := filepath.Join(projectRoot(t), "testdata", "gox", "manifest.yaml")
+	repoPath := filepath.Join(projectRoot(t), "testdata", "gox", "repo")
+	scanOutputDir := filepath.Join(workdir, "scan-out")
+	renderOutputPath := filepath.Join(workdir, "rendered.md")
+
+	_, _, scanErr := executeCommand(t, workdir,
+		"scan", "feature",
+		"--feature", "claude-count-tokens",
+		"--manifest", manifestPath,
+		"--local", repoPath,
+		"--official", repoPath,
+		"--format", "json",
+		"--out", scanOutputDir,
+	)
+	require.NoError(t, scanErr)
+
+	stdout, _, renderErr := executeCommand(t, workdir,
+		"report", "render",
+		"--input", filepath.Join(scanOutputDir, "report.json"),
+		"--format", "md",
+		"--out", renderOutputPath,
+	)
+	require.NoError(t, renderErr)
+	require.Empty(t, stdout)
+
+	renderedContent, readErr := os.ReadFile(renderOutputPath)
+	require.NoError(t, readErr)
+	require.Contains(t, string(renderedContent), "# ForkTool Audit Report")
+	require.Contains(t, string(renderedContent), "Feature: claude-count-tokens")
 }
 
 func executeCommand(t *testing.T, workdir string, args ...string) (string, string, error) {

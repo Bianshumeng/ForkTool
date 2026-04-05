@@ -44,22 +44,23 @@ type ChainNode struct {
 }
 
 type DecisionHint struct {
-	FeatureID string `json:"featureId"`
-	Scope     string `json:"scope"`
-	Decision  string `json:"decision"`
-	Reason    string `json:"reason"`
-	Source    string `json:"source"`
+	FeatureID string `json:"featureId" yaml:"featureId"`
+	Scope     string `json:"scope" yaml:"scope"`
+	Decision  string `json:"decision" yaml:"decision"`
+	Reason    string `json:"reason" yaml:"reason"`
+	Source    string `json:"source,omitempty" yaml:"source,omitempty"`
 }
 
 type FeatureChain struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	RiskLevel     string         `json:"riskLevel"`
-	Languages     []string       `json:"languages"`
-	LocalNodes    []ChainNode    `json:"localNodes"`
-	OfficialNodes []ChainNode    `json:"officialNodes"`
-	SemanticRules []string       `json:"semanticRules"`
-	DecisionHints []DecisionHint `json:"decisionHints,omitempty"`
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	RiskLevel       string         `json:"riskLevel"`
+	Languages       []string       `json:"languages"`
+	LocalNodes      []ChainNode    `json:"localNodes"`
+	OfficialNodes   []ChainNode    `json:"officialNodes"`
+	SemanticRules   []string       `json:"semanticRules"`
+	DefaultDecision string         `json:"defaultDecision,omitempty"`
+	DecisionHints   []DecisionHint `json:"decisionHints,omitempty"`
 }
 
 type EvidenceRef struct {
@@ -173,4 +174,15 @@ type ScanFeatureResult struct {
 	DiscoveryMode     string   `json:"discoveryMode"`
 	LocalNodeCount    int      `json:"localNodeCount"`
 	OfficialNodeCount int      `json:"officialNodeCount"`
+	FindingCount      int      `json:"findingCount"`
+}
+
+type ScanReleaseResult struct {
+	RunID           string   `json:"runId"`
+	OutputDir       string   `json:"outputDir"`
+	ContextPath     string   `json:"contextPath"`
+	ReportFiles     []string `json:"reportFiles"`
+	BaselineStatus  string   `json:"baselineStatus"`
+	FeaturesScanned int      `json:"featuresScanned"`
+	FindingCount    int      `json:"findingCount"`
 }
