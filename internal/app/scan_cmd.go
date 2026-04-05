@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -402,9 +403,13 @@ func (c *CLI) scanFeature(ctx context.Context, environment scanEnvironment, feat
 		return model.FeatureReport{}, model.FeatureChain{}, err
 	}
 
+	supportedRules, unsupportedRules := splitSemanticRules(feature.SemanticRules)
 	notes := []string{
 		fmt.Sprintf("Go Adapter extracted %d local node(s) and %d official node(s).", countExtractedNodes(featureChain.LocalNodes), countExtractedNodes(featureChain.OfficialNodes)),
-		fmt.Sprintf("Applied %d semantic rule(s): %s", len(feature.SemanticRules), strings.Join(feature.SemanticRules, ", ")),
+		fmt.Sprintf("Applied %d supported semantic rule(s): %s", len(supportedRules), strings.Join(supportedRules, ", ")),
+	}
+	if len(unsupportedRules) > 0 {
+		notes = append(notes, fmt.Sprintf("Unsupported semantic rule(s) skipped for now: %s", strings.Join(unsupportedRules, ", ")))
 	}
 	if len(decisionHints) > 0 {
 		notes = append(notes, fmt.Sprintf("Loaded %d decision hint(s) from decision file.", len(decisionHints)))
@@ -545,4 +550,16 @@ func metadataBool(metadata map[string]any, key string) bool {
 
 	booleanValue, ok := value.(bool)
 	return ok && booleanValue
+}
+
+func splitSemanticRules(ruleIDs []string) (supported []string, unsupported []string) {
+	supportedSet := rules.SupportedRuleIDs()
+	for _, ruleID := range ruleIDs {
+		if slices.Contains(supportedSet, ruleID) {
+			supported = append(supported, ruleID)
+			continue
+		}
+		unsupported = append(unsupported, ruleID)
+	}
+	return supported, unsupported
 }

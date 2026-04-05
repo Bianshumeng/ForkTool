@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -28,6 +29,15 @@ type parsedGoFile struct {
 type parserCache struct {
 	repoRoot string
 	files    map[string]*parsedGoFile
+}
+
+type routeRegistration struct {
+	Method         string
+	Path           string
+	FullPath       string
+	HandlerTargets []string
+	PrimaryHandler string
+	Range          model.SourceRange
 }
 
 func New() discovery.Adapter {
@@ -106,7 +116,7 @@ func (c *parserCache) parse(relativeOrAbsolutePath string) (*parsedGoFile, error
 }
 
 func discoverRoutes(cache *parserCache, routes []model.ManifestRoute, repoSide string) ([]model.ChainNode, error) {
-	goFiles, err := collectGoFiles(cache.repoRoot)
+	candidateFiles, err := collectRouteFiles(cache.repoRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +124,7 @@ func discoverRoutes(cache *parserCache, routes []model.ManifestRoute, repoSide s
 	nodes := make([]model.ChainNode, 0, len(routes))
 	for _, route := range routes {
 		matched := false
-		for _, goFile := range goFiles {
+		for _, goFile := range candidateFiles {
 			parsed, err := cache.parse(goFile)
 			if err != nil {
 				return nil, err
@@ -150,86 +160,309 @@ func collectRouteMatches(parsed *parsedGoFile, pathPattern, repoSide string) []m
 	nodes := make([]model.ChainNode, 0)
 
 	for _, decl := range parsed.File.Decls {
-		switch typedDecl := decl.(type) {
-		case *ast.FuncDecl:
-			if typedDecl.Body == nil {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Body == nil || funcDecl.Name == nil {
+			continue
+		}
+
+		for _, registration := range collectRouteRegistrations(parsed, funcDecl) {
+			if !routePatternMatches(pathPattern, registration.FullPath) {
 				continue
 			}
-			if !isRouteContext(parsed.RelativePath, typedDecl.Name.Name) {
-				continue
+
+			metadata := map[string]any{
+				"pathPattern":     pathPattern,
+				"matchedLiteral":  registration.Path,
+				"matchedFullPath": registration.FullPath,
+				"method":          registration.Method,
+				"repoSide":        repoSide,
+				"adapter":         "gox",
+				"exists":          true,
+				"extracted":       true,
+				"source":          "go-ast",
+			}
+			if len(registration.HandlerTargets) > 0 {
+				metadata["handlerTargets"] = registration.HandlerTargets
+				metadata["primaryHandler"] = registration.PrimaryHandler
 			}
 
-			ast.Inspect(typedDecl.Body, func(node ast.Node) bool {
-				literal, ok := node.(*ast.BasicLit)
-				if !ok || literal.Kind != token.STRING {
-					return true
-				}
-
-				unquoted, err := strconv.Unquote(literal.Value)
-				if err != nil || !routePatternMatches(pathPattern, unquoted) {
-					return true
-				}
-
-				nodes = append(nodes, model.ChainNode{
-					Kind:       model.NodeKindRoute,
-					Language:   "go",
-					FilePath:   parsed.RelativePath,
-					SymbolName: typedDecl.Name.Name,
-					Range:      sourceRange(parsed.FileSet, literal.Pos(), literal.End()),
-					Metadata: map[string]any{
-						"pathPattern":    pathPattern,
-						"matchedLiteral": unquoted,
-						"repoSide":       repoSide,
-						"adapter":        "gox",
-						"exists":         true,
-						"extracted":      true,
-						"source":         "go-ast",
-					},
+			relations := make([]model.NodeRelation, 0)
+			if registration.PrimaryHandler != "" {
+				relations = append(relations, model.NodeRelation{
+					Type:   "handles",
+					Target: registration.PrimaryHandler,
 				})
-				return true
+			}
+
+			nodes = append(nodes, model.ChainNode{
+				Kind:       model.NodeKindRoute,
+				Language:   "go",
+				FilePath:   parsed.RelativePath,
+				SymbolName: funcDecl.Name.Name,
+				Range:      registration.Range,
+				Metadata:   metadata,
+				Relations:  relations,
 			})
-		case *ast.GenDecl:
-			if !isRouteFile(parsed.RelativePath) {
+		}
+	}
+
+	return nodes
+}
+
+func collectRouteRegistrations(parsed *parsedGoFile, funcDecl *ast.FuncDecl) []routeRegistration {
+	prefixes := map[string]string{}
+	for _, param := range functionParamNames(funcDecl) {
+		prefixes[param] = ""
+	}
+
+	return inspectRouteStatements(parsed, funcDecl.Body.List, prefixes)
+}
+
+func inspectRouteStatements(parsed *parsedGoFile, statements []ast.Stmt, prefixes map[string]string) []routeRegistration {
+	registrations := make([]routeRegistration, 0)
+	currentPrefixes := clonePrefixes(prefixes)
+
+	for _, statement := range statements {
+		switch typedStmt := statement.(type) {
+		case *ast.AssignStmt:
+			for index, rhs := range typedStmt.Rhs {
+				if prefix, ok := resolveGroupPrefix(rhs, currentPrefixes); ok && index < len(typedStmt.Lhs) {
+					if ident, ok := typedStmt.Lhs[index].(*ast.Ident); ok {
+						currentPrefixes[ident.Name] = prefix
+					}
+				}
+
+				if call, ok := rhs.(*ast.CallExpr); ok {
+					if registration, ok := buildRouteRegistration(parsed, call, currentPrefixes); ok {
+						registrations = append(registrations, registration)
+					}
+				}
+			}
+		case *ast.DeclStmt:
+			genDecl, ok := typedStmt.Decl.(*ast.GenDecl)
+			if !ok {
 				continue
 			}
-			for _, spec := range typedDecl.Specs {
+			for _, spec := range genDecl.Specs {
 				valueSpec, ok := spec.(*ast.ValueSpec)
 				if !ok {
 					continue
 				}
-
-				for _, value := range valueSpec.Values {
-					literal, ok := value.(*ast.BasicLit)
-					if !ok || literal.Kind != token.STRING {
-						continue
+				for index, value := range valueSpec.Values {
+					if prefix, ok := resolveGroupPrefix(value, currentPrefixes); ok && index < len(valueSpec.Names) {
+						currentPrefixes[valueSpec.Names[index].Name] = prefix
 					}
+				}
+			}
+		case *ast.ExprStmt:
+			registrations = append(registrations, extractRegistrationsFromExpr(parsed, typedStmt.X, currentPrefixes)...)
+		case *ast.BlockStmt:
+			registrations = append(registrations, inspectRouteStatements(parsed, typedStmt.List, currentPrefixes)...)
+		case *ast.IfStmt:
+			registrations = append(registrations, inspectIfStatement(parsed, typedStmt, currentPrefixes)...)
+		case *ast.ForStmt:
+			registrations = append(registrations, inspectRouteStatements(parsed, typedStmt.Body.List, currentPrefixes)...)
+		case *ast.RangeStmt:
+			registrations = append(registrations, inspectRouteStatements(parsed, typedStmt.Body.List, currentPrefixes)...)
+		}
+	}
 
-					unquoted, err := strconv.Unquote(literal.Value)
-					if err != nil || !routePatternMatches(pathPattern, unquoted) {
-						continue
+	return registrations
+}
+
+func inspectIfStatement(parsed *parsedGoFile, ifStmt *ast.IfStmt, prefixes map[string]string) []routeRegistration {
+	registrations := make([]routeRegistration, 0)
+	currentPrefixes := clonePrefixes(prefixes)
+
+	if ifStmt.Init != nil {
+		switch init := ifStmt.Init.(type) {
+		case *ast.AssignStmt:
+			for index, rhs := range init.Rhs {
+				if prefix, ok := resolveGroupPrefix(rhs, currentPrefixes); ok && index < len(init.Lhs) {
+					if ident, ok := init.Lhs[index].(*ast.Ident); ok {
+						currentPrefixes[ident.Name] = prefix
 					}
-
-					nodes = append(nodes, model.ChainNode{
-						Kind:     model.NodeKindRoute,
-						Language: "go",
-						FilePath: parsed.RelativePath,
-						Range:    sourceRange(parsed.FileSet, literal.Pos(), literal.End()),
-						Metadata: map[string]any{
-							"pathPattern":    pathPattern,
-							"matchedLiteral": unquoted,
-							"repoSide":       repoSide,
-							"adapter":        "gox",
-							"exists":         true,
-							"extracted":      true,
-							"source":         "go-ast",
-						},
-					})
 				}
 			}
 		}
 	}
 
-	return nodes
+	registrations = append(registrations, inspectRouteStatements(parsed, ifStmt.Body.List, currentPrefixes)...)
+	if ifStmt.Else != nil {
+		switch typedElse := ifStmt.Else.(type) {
+		case *ast.BlockStmt:
+			registrations = append(registrations, inspectRouteStatements(parsed, typedElse.List, currentPrefixes)...)
+		case *ast.IfStmt:
+			registrations = append(registrations, inspectIfStatement(parsed, typedElse, currentPrefixes)...)
+		}
+	}
+	return registrations
+}
+
+func extractRegistrationsFromExpr(parsed *parsedGoFile, expr ast.Expr, prefixes map[string]string) []routeRegistration {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return nil
+	}
+
+	if registration, ok := buildRouteRegistration(parsed, call, prefixes); ok {
+		return []routeRegistration{registration}
+	}
+
+	return nil
+}
+
+func buildRouteRegistration(parsed *parsedGoFile, call *ast.CallExpr, prefixes map[string]string) (routeRegistration, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || !isGinRouteMethod(selector.Sel.Name) || len(call.Args) == 0 {
+		return routeRegistration{}, false
+	}
+
+	pathLiteral, ok := stringLiteral(call.Args[0])
+	if !ok {
+		return routeRegistration{}, false
+	}
+
+	fullPath, ok := resolveCallPath(selector.X, pathLiteral, prefixes)
+	if !ok {
+		fullPath = normalizeRoutePath(pathLiteral)
+	}
+
+	handlerTargets := uniqueStrings(extractHandlerTargets(call.Args[1:]))
+	primaryHandler := ""
+	if len(handlerTargets) > 0 {
+		primaryHandler = handlerTargets[len(handlerTargets)-1]
+	}
+
+	return routeRegistration{
+		Method:         strings.ToUpper(selector.Sel.Name),
+		Path:           normalizeRoutePath(pathLiteral),
+		FullPath:       fullPath,
+		HandlerTargets: handlerTargets,
+		PrimaryHandler: primaryHandler,
+		Range:          sourceRange(parsed.FileSet, call.Pos(), call.End()),
+	}, true
+}
+
+func resolveCallPath(receiver ast.Expr, routePath string, prefixes map[string]string) (string, bool) {
+	switch typedReceiver := receiver.(type) {
+	case *ast.Ident:
+		prefix, ok := prefixes[typedReceiver.Name]
+		if !ok {
+			return normalizeRoutePath(routePath), true
+		}
+		return joinRoutePath(prefix, routePath), true
+	case *ast.CallExpr:
+		prefix, ok := resolveGroupPrefix(typedReceiver, prefixes)
+		if !ok {
+			return "", false
+		}
+		return joinRoutePath(prefix, routePath), true
+	case *ast.SelectorExpr:
+		return resolveCallPath(typedReceiver.X, routePath, prefixes)
+	default:
+		return "", false
+	}
+}
+
+func resolveGroupPrefix(expr ast.Expr, prefixes map[string]string) (string, bool) {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return "", false
+	}
+
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel == nil || selector.Sel.Name != "Group" {
+		return "", false
+	}
+
+	groupPath := ""
+	if len(call.Args) > 0 {
+		literal, ok := stringLiteral(call.Args[0])
+		if !ok {
+			return "", false
+		}
+		groupPath = literal
+	}
+
+	basePrefix, ok := resolveReceiverPrefix(selector.X, prefixes)
+	if !ok {
+		basePrefix = ""
+	}
+
+	return joinRoutePath(basePrefix, groupPath), true
+}
+
+func resolveReceiverPrefix(expr ast.Expr, prefixes map[string]string) (string, bool) {
+	switch typedExpr := expr.(type) {
+	case *ast.Ident:
+		prefix, ok := prefixes[typedExpr.Name]
+		if !ok {
+			return "", false
+		}
+		return prefix, true
+	case *ast.CallExpr:
+		return resolveGroupPrefix(typedExpr, prefixes)
+	case *ast.SelectorExpr:
+		return resolveReceiverPrefix(typedExpr.X, prefixes)
+	default:
+		return "", false
+	}
+}
+
+func extractHandlerTargets(arguments []ast.Expr) []string {
+	targets := make([]string, 0)
+	for _, argument := range arguments {
+		targets = append(targets, extractHandlerTargetsFromExpr(argument)...)
+	}
+	return uniqueStrings(targets)
+}
+
+func extractHandlerTargetsFromExpr(expr ast.Expr) []string {
+	switch typedExpr := expr.(type) {
+	case *ast.SelectorExpr:
+		target := selectorChain(typedExpr)
+		if shouldIgnoreTarget(target) {
+			return nil
+		}
+		return []string{target}
+	case *ast.Ident:
+		if typedExpr.Name == "" {
+			return nil
+		}
+		return []string{typedExpr.Name}
+	case *ast.CallExpr:
+		targets := make([]string, 0)
+		for _, argument := range typedExpr.Args {
+			targets = append(targets, extractHandlerTargetsFromExpr(argument)...)
+		}
+		return uniqueStrings(targets)
+	case *ast.FuncLit:
+		targets := make([]string, 0)
+		ast.Inspect(typedExpr.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+
+			switch fun := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				target := selectorChain(fun)
+				if shouldIgnoreTarget(target) {
+					return true
+				}
+				targets = append(targets, target)
+			case *ast.Ident:
+				if fun.Name != "" {
+					targets = append(targets, fun.Name)
+				}
+			}
+			return true
+		})
+		return uniqueStrings(targets)
+	default:
+		return nil
+	}
 }
 
 func discoverSymbols(cache *parserCache, symbols []model.ManifestSymbol, repoSide string) ([]model.ChainNode, error) {
@@ -381,7 +614,7 @@ func discoverTests(cache *parserCache, testFiles []string, repoSide string) ([]m
 	return nodes, nil
 }
 
-func collectGoFiles(root string) ([]string, error) {
+func collectRouteFiles(root string) ([]string, error) {
 	files := make([]string, 0)
 
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -391,13 +624,13 @@ func collectGoFiles(root string) ([]string, error) {
 
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", ".forktool", "node_modules", "vendor":
+			case ".git", ".forktool", ".cache", "node_modules", "vendor":
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		if filepath.Ext(entry.Name()) != ".go" {
+		if filepath.Ext(entry.Name()) != ".go" || strings.HasSuffix(strings.ToLower(entry.Name()), "_test.go") {
 			return nil
 		}
 
@@ -405,14 +638,40 @@ func collectGoFiles(root string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		files = append(files, filepath.ToSlash(relativePath))
+		normalized := filepath.ToSlash(relativePath)
+		if !isRouteCandidateFile(normalized) {
+			return nil
+		}
+
+		files = append(files, normalized)
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("walk go files: %w", err)
+		return nil, fmt.Errorf("walk route files: %w", err)
 	}
 
+	slices.Sort(files)
 	return files, nil
+}
+
+func isRouteCandidateFile(filePath string) bool {
+	lowerFile := strings.ToLower(filepath.ToSlash(filePath))
+	switch {
+	case strings.HasPrefix(lowerFile, ".cache/"):
+		return false
+	case strings.Contains(lowerFile, "/pkg/mod/"):
+		return false
+	case strings.Contains(lowerFile, "/routes/"):
+		return true
+	case strings.HasSuffix(lowerFile, "/router.go"):
+		return true
+	case strings.HasSuffix(lowerFile, "/setup/handler.go"):
+		return true
+	case strings.HasSuffix(lowerFile, "/server/router.go"):
+		return true
+	default:
+		return false
+	}
 }
 
 func kindForSymbol(filePath, functionName string) model.NodeKind {
@@ -435,33 +694,166 @@ func kindForSymbol(filePath, functionName string) model.NodeKind {
 	}
 }
 
-func routePatternMatches(pathPattern, literal string) bool {
-	pathPattern = strings.TrimSpace(pathPattern)
-	literal = strings.TrimSpace(literal)
-	if pathPattern == "" || literal == "" {
+func routePatternMatches(pathPattern, candidatePath string) bool {
+	pathPattern = normalizeRoutePath(pathPattern)
+	candidatePath = normalizeRoutePath(candidatePath)
+	if pathPattern == "" || candidatePath == "" {
 		return false
 	}
 
-	if strings.Contains(pathPattern, "*") {
-		prefix := strings.TrimSuffix(pathPattern, "*")
-		return strings.Contains(literal, prefix)
+	if pathPattern == candidatePath {
+		return true
 	}
 
-	return literal == pathPattern || strings.Contains(literal, pathPattern)
+	patternPrefix := wildcardPrefix(pathPattern)
+	candidatePrefix := wildcardPrefix(candidatePath)
+
+	switch {
+	case patternPrefix != "" && strings.HasPrefix(candidatePath, patternPrefix):
+		return true
+	case candidatePrefix != "" && strings.HasPrefix(pathPattern, candidatePrefix):
+		return true
+	default:
+		return false
+	}
 }
 
-func isRouteContext(filePath, functionName string) bool {
-	return isRouteFile(filePath) || isRouteFunction(functionName)
+func wildcardPrefix(value string) string {
+	value = normalizeRoutePath(value)
+	if value == "" {
+		return ""
+	}
+
+	index := len(value)
+	if wildcardIndex := strings.IndexAny(value, "*:"); wildcardIndex >= 0 {
+		index = wildcardIndex
+	}
+	if index == len(value) {
+		return ""
+	}
+
+	prefix := strings.TrimSuffix(value[:index], "/")
+	if prefix == "" {
+		return "/"
+	}
+	return prefix
 }
 
-func isRouteFile(filePath string) bool {
-	lowerFile := strings.ToLower(filePath)
-	return strings.Contains(lowerFile, "route") || strings.Contains(lowerFile, "router")
+func isGinRouteMethod(name string) bool {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY", "MATCH", "HANDLE":
+		return true
+	default:
+		return false
+	}
 }
 
-func isRouteFunction(functionName string) bool {
-	lowerFunction := strings.ToLower(functionName)
-	return strings.Contains(lowerFunction, "route") || strings.Contains(lowerFunction, "register")
+func selectorChain(selector *ast.SelectorExpr) string {
+	parts := make([]string, 0, 4)
+	current := ast.Expr(selector)
+	for current != nil {
+		switch typed := current.(type) {
+		case *ast.SelectorExpr:
+			parts = append(parts, typed.Sel.Name)
+			current = typed.X
+		case *ast.Ident:
+			parts = append(parts, typed.Name)
+			current = nil
+		default:
+			current = nil
+		}
+	}
+	slices.Reverse(parts)
+	return strings.Join(parts, ".")
+}
+
+func shouldIgnoreTarget(target string) bool {
+	return strings.HasPrefix(target, "c.") || strings.HasPrefix(target, "gin.")
+}
+
+func functionParamNames(funcDecl *ast.FuncDecl) []string {
+	if funcDecl.Type == nil || funcDecl.Type.Params == nil {
+		return nil
+	}
+
+	names := make([]string, 0)
+	for _, field := range funcDecl.Type.Params.List {
+		for _, name := range field.Names {
+			names = append(names, name.Name)
+		}
+	}
+	return names
+}
+
+func clonePrefixes(prefixes map[string]string) map[string]string {
+	cloned := make(map[string]string, len(prefixes))
+	for key, value := range prefixes {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func uniqueStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	unique := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
+}
+
+func joinRoutePath(prefix, route string) string {
+	prefix = normalizeRoutePath(prefix)
+	route = strings.TrimSpace(route)
+	if route == "" {
+		return prefix
+	}
+	if prefix == "" {
+		return normalizeRoutePath(route)
+	}
+	return normalizeRoutePath(strings.TrimSuffix(prefix, "/") + "/" + strings.TrimPrefix(route, "/"))
+}
+
+func normalizeRoutePath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	for strings.Contains(value, "//") {
+		value = strings.ReplaceAll(value, "//", "/")
+	}
+	if len(value) > 1 {
+		value = strings.TrimSuffix(value, "/")
+	}
+	return value
+}
+
+func stringLiteral(expr ast.Expr) (string, bool) {
+	literal, ok := expr.(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return "", false
+	}
+
+	unquoted, err := strconv.Unquote(literal.Value)
+	if err != nil {
+		return "", false
+	}
+	return unquoted, true
 }
 
 func sourceRange(fileSet *token.FileSet, start, end token.Pos) model.SourceRange {

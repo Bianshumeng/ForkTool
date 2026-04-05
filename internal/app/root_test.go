@@ -180,6 +180,20 @@ func TestReportRenderCommandWritesMarkdown(t *testing.T) {
 	require.Contains(t, string(renderedContent), "Feature: claude-count-tokens")
 }
 
+func TestSplitSemanticRules(t *testing.T) {
+	supported, unsupported := splitSemanticRules([]string{
+		"claude-count-tokens-beta-suffix",
+		"response-header-filter",
+		"openai-session-isolation",
+	})
+
+	require.Equal(t, []string{
+		"claude-count-tokens-beta-suffix",
+		"openai-session-isolation",
+	}, supported)
+	require.Equal(t, []string{"response-header-filter"}, unsupported)
+}
+
 func executeCommand(t *testing.T, workdir string, args ...string) (string, string, error) {
 	t.Helper()
 
