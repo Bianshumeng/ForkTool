@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "forktool",
+  "project_id": "4d1a79e4-dfb3-4966-bc1f-66113ac11d73"
+}
