@@ -189,9 +189,10 @@ func TestSplitSemanticRules(t *testing.T) {
 
 	require.Equal(t, []string{
 		"claude-count-tokens-beta-suffix",
+		"response-header-filter",
 		"openai-session-isolation",
 	}, supported)
-	require.Equal(t, []string{"response-header-filter"}, unsupported)
+	require.Empty(t, unsupported)
 }
 
 func executeCommand(t *testing.T, workdir string, args ...string) (string, string, error) {

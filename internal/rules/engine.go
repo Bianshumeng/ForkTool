@@ -30,12 +30,19 @@ func NewEngine(localRepoRoot, officialRepoRoot string) RuleEngine {
 
 func SupportedRuleIDs() []string {
 	return []string{
+		"claude-metadata-userid-format",
 		"claude-count-tokens-beta-suffix",
 		"claude-session-hash-normalization",
 		"http-header-wire-casing",
+		"response-header-filter",
 		"openai-compact-path-suffix",
+		"openai-originator-compatibility",
 		"openai-session-isolation",
 		"openai-passthrough-body-normalization",
+		"openai-ws-previous-response-id",
+		"openai-ws-turn-metadata-replay",
+		"observability-upstream-model",
+		"gemini-failover-semantics",
 		"gemini-upstream-model-preserved",
 		"gemini-digest-prefix-ua-normalization",
 		"test-file-presence",
@@ -51,6 +58,18 @@ func (e Engine) Apply(_ context.Context, feature model.FeatureChain, decisions [
 	findings := make([]model.SemanticDiff, 0)
 	for _, ruleID := range feature.SemanticRules {
 		switch ruleID {
+		case "claude-metadata-userid-format":
+			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
+				severity:           "high",
+				category:           "metadata-format",
+				titleMissing:       "metadata.user_id 未使用官方格式化逻辑",
+				titleUnexpected:    "metadata.user_id 仍保留官方已移除的格式化逻辑",
+				descriptionMissing: "官方链路命中 FormatMetadataUserID，本地未命中。",
+				descriptionExtra:   "本地命中 FormatMetadataUserID，但官方基线未命中。",
+				recommendedAction:  "replace-with-official",
+				localTokens:        []string{"FormatMetadataUserID"},
+				officialTokens:     []string{"FormatMetadataUserID"},
+			}))
 		case "claude-count-tokens-beta-suffix":
 			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
 				severity:           "critical",
@@ -88,6 +107,18 @@ func (e Engine) Apply(_ context.Context, feature model.FeatureChain, decisions [
 				officialTokens:     []string{"resolveWireCasing", "addHeaderRaw"},
 				localFallbackAny:   []string{"Header.Add(", "Header.Set("},
 			}))
+		case "response-header-filter":
+			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
+				severity:           "high",
+				category:           "response-header",
+				titleMissing:       "响应头过滤链未对齐官方",
+				titleUnexpected:    "本地保留了官方已移除的响应头过滤链",
+				descriptionMissing: "官方链路命中 responseHeaderFilter + responseheaders.WriteFilteredHeaders，本地未完整命中。",
+				descriptionExtra:   "本地命中 responseHeaderFilter + responseheaders.WriteFilteredHeaders，但官方基线未命中。",
+				recommendedAction:  "replace-with-official",
+				localTokens:        []string{"responseHeaderFilter", "responseheaders.WriteFilteredHeaders"},
+				officialTokens:     []string{"responseHeaderFilter", "responseheaders.WriteFilteredHeaders"},
+			}))
 		case "openai-compact-path-suffix":
 			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
 				severity:           "critical",
@@ -100,6 +131,18 @@ func (e Engine) Apply(_ context.Context, feature model.FeatureChain, decisions [
 				localTokens:        []string{"/responses/compact"},
 				officialTokens:     []string{"/responses/compact"},
 				useRouteNodes:      true,
+			}))
+		case "openai-originator-compatibility":
+			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
+				severity:           "high",
+				category:           "request-header",
+				titleMissing:       "OpenAI originator / beta 兼容头未按官方保留",
+				titleUnexpected:    "本地保留了官方已移除的 OpenAI originator / beta 兼容逻辑",
+				descriptionMissing: "官方链路命中 OpenAI-Beta + originator + IsCodexOfficialClientByHeaders，本地未完整命中。",
+				descriptionExtra:   "本地命中 OpenAI-Beta + originator + IsCodexOfficialClientByHeaders，但官方基线未命中。",
+				recommendedAction:  "replace-with-official",
+				localTokens:        []string{"OpenAI-Beta", "originator", "IsCodexOfficialClientByHeaders"},
+				officialTokens:     []string{"OpenAI-Beta", "originator", "IsCodexOfficialClientByHeaders"},
 			}))
 		case "openai-session-isolation":
 			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
@@ -124,6 +167,54 @@ func (e Engine) Apply(_ context.Context, feature model.FeatureChain, decisions [
 				recommendedAction:  "replace-with-official",
 				localTokens:        []string{"normalizeOpenAIPassthroughOAuthBody"},
 				officialTokens:     []string{"normalizeOpenAIPassthroughOAuthBody"},
+			}))
+		case "openai-ws-previous-response-id":
+			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
+				severity:           "high",
+				category:           "session-routing",
+				titleMissing:       "WS previous_response_id 恢复链未按官方保留",
+				titleUnexpected:    "本地保留了官方已移除的 WS previous_response_id 恢复链",
+				descriptionMissing: "官方链路命中 previous_response_id + drop_previous_response_id 重试逻辑，本地未完整命中。",
+				descriptionExtra:   "本地命中 previous_response_id + drop_previous_response_id 重试逻辑，但官方基线未命中。",
+				recommendedAction:  "replace-with-official",
+				localTokens:        []string{"previous_response_id", "drop_previous_response_id"},
+				officialTokens:     []string{"previous_response_id", "drop_previous_response_id"},
+			}))
+		case "openai-ws-turn-metadata-replay":
+			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
+				severity:           "high",
+				category:           "request-body",
+				titleMissing:       "WS turn metadata replay 链未按官方保留",
+				titleUnexpected:    "本地保留了官方已移除的 WS turn metadata replay 链",
+				descriptionMissing: "官方链路命中 has_turn_metadata + buildOpenAIWSReplayInputSequence，本地未完整命中。",
+				descriptionExtra:   "本地命中 has_turn_metadata + buildOpenAIWSReplayInputSequence，但官方基线未命中。",
+				recommendedAction:  "replace-with-official",
+				localTokens:        []string{"has_turn_metadata", "buildOpenAIWSReplayInputSequence"},
+				officialTokens:     []string{"has_turn_metadata", "buildOpenAIWSReplayInputSequence"},
+			}))
+		case "observability-upstream-model":
+			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
+				severity:           "high",
+				category:           "observability",
+				titleMissing:       "upstream_model 观测链缺失",
+				titleUnexpected:    "本地保留了官方已移除的 upstream_model 观测链",
+				descriptionMissing: "官方链路命中 UpstreamModel，本地未命中。",
+				descriptionExtra:   "本地命中 UpstreamModel，但官方基线未命中。",
+				recommendedAction:  "verify-observability-chain",
+				localTokens:        []string{"UpstreamModel"},
+				officialTokens:     []string{"UpstreamModel"},
+			}))
+		case "gemini-failover-semantics":
+			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{
+				severity:           "high",
+				category:           "error-semantics",
+				titleMissing:       "Gemini failover 语义未按官方处理",
+				titleUnexpected:    "本地保留了官方已移除的 Gemini failover 处理链",
+				descriptionMissing: "官方链路命中 HandleFailoverError + handleGeminiFailoverExhausted，本地未完整命中。",
+				descriptionExtra:   "本地命中 HandleFailoverError + handleGeminiFailoverExhausted，但官方基线未命中。",
+				recommendedAction:  "merge-official-into-local-hook",
+				localTokens:        []string{"HandleFailoverError", "handleGeminiFailoverExhausted"},
+				officialTokens:     []string{"HandleFailoverError", "handleGeminiFailoverExhausted"},
 			}))
 		case "gemini-upstream-model-preserved":
 			appendFinding(&findings, comparePresence(ruleID, feature, decisions, input, ruleDefinition{

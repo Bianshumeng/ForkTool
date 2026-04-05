@@ -182,11 +182,18 @@ ForkTool 当前实现仍严格服从文档主线：
 当前规则引擎优先实现高确定性、可落地、可测试的规则：
 
 - `claude-count-tokens-beta-suffix`
+- `claude-metadata-userid-format`
 - `claude-session-hash-normalization`
 - `http-header-wire-casing`
+- `response-header-filter`
 - `openai-compact-path-suffix`
+- `openai-originator-compatibility`
 - `openai-session-isolation`
 - `openai-passthrough-body-normalization`
+- `openai-ws-previous-response-id`
+- `openai-ws-turn-metadata-replay`
+- `observability-upstream-model`
+- `gemini-failover-semantics`
 - `gemini-upstream-model-preserved`
 - `gemini-digest-prefix-ua-normalization`
 - `test-file-presence`
