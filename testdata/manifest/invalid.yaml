@@ -1,0 +1,21 @@
+version: 1
+repoKind: sub2api
+features:
+  - id: duplicate-feature
+    name: First feature
+    riskLevel: critical
+    languages: [go]
+    chain:
+      routes:
+        - pathPattern: "/v1/messages"
+    semanticRules:
+      - claude-count-tokens-beta-suffix
+    decisions:
+      default: official-required
+  - id: duplicate-feature
+    name: ""
+    riskLevel: ""
+    languages: []
+    chain: {}
+    semanticRules: []
+    decisions: {}

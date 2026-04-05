@@ -1,0 +1,191 @@
+version: 1
+repoKind: sub2api
+
+defaults:
+  reportFormats:
+    - md
+    - json
+  decisionFile: "./decisions/sub2api.local-decisions.yaml"
+
+features:
+  - id: claude-messages-mainchain
+    name: Claude /messages 主链
+    riskLevel: critical
+    owners: [backend]
+    languages: [go, yaml, markdown]
+    chain:
+      routes:
+        - pathPattern: "/v1/messages"
+      symbols:
+        - file: backend/internal/server/routes/gateway.go
+          functions: [RegisterGatewayRoutes]
+        - file: backend/internal/handler/gateway_handler.go
+          functions: [Messages, CountTokens]
+        - file: backend/internal/service/gateway_service.go
+          functions:
+            - GenerateSessionHash
+            - buildOAuthMetadataUserID
+            - Forward
+        - file: backend/internal/service/gateway_request.go
+          functions:
+            - ParseGatewayRequest
+            - NormalizeSessionUserAgent
+      tests:
+        - backend/internal/service/gateway_request_test.go
+        - backend/internal/service/gateway_anthropic_apikey_passthrough_test.go
+    semanticRules:
+      - claude-metadata-userid-format
+      - claude-session-hash-normalization
+      - http-header-wire-casing
+    decisions:
+      default: official-required
+      allowedLocalHooks:
+        - error-redaction
+        - client-facing-cn-errors
+
+  - id: claude-count-tokens
+    name: Claude count_tokens 主链
+    riskLevel: critical
+    owners: [backend]
+    languages: [go]
+    chain:
+      routes:
+        - pathPattern: "/v1/messages/count_tokens"
+      symbols:
+        - file: backend/internal/service/gateway_service.go
+          functions:
+            - ForwardCountTokens
+            - buildCountTokensRequest
+            - buildCountTokensRequestAnthropicAPIKeyPassthrough
+      tests:
+        - backend/internal/service/gateway_anthropic_apikey_passthrough_test.go
+    semanticRules:
+      - claude-count-tokens-beta-suffix
+      - http-header-wire-casing
+      - response-header-filter
+    decisions:
+      default: official-required
+
+  - id: openai-responses-http
+    name: OpenAI Responses HTTP 主链
+    riskLevel: critical
+    owners: [backend]
+    languages: [go]
+    chain:
+      routes:
+        - pathPattern: "/v1/responses"
+      symbols:
+        - file: backend/internal/handler/openai_gateway_handler.go
+          functions: [Responses, Messages]
+        - file: backend/internal/service/openai_gateway_service.go
+          functions:
+            - Forward
+            - buildUpstreamRequest
+            - buildUpstreamRequestOpenAIPassthrough
+            - normalizeOpenAIPassthroughOAuthBody
+      tests:
+        - backend/internal/service/openai_gateway_service_test.go
+    semanticRules:
+      - openai-session-isolation
+      - openai-passthrough-body-normalization
+      - openai-originator-compatibility
+      - response-header-filter
+    decisions:
+      default: official-required
+      allowedLocalHooks:
+        - client-error-redaction
+
+  - id: openai-responses-compact
+    name: OpenAI Responses compact 变体
+    riskLevel: critical
+    owners: [backend]
+    languages: [go]
+    chain:
+      routes:
+        - pathPattern: "/v1/responses/compact"
+      symbols:
+        - file: backend/internal/service/openai_gateway_service.go
+          functions:
+            - buildUpstreamRequest
+            - buildUpstreamRequestOpenAIPassthrough
+            - normalizeOpenAIPassthroughOAuthBody
+      tests:
+        - backend/internal/service/openai_gateway_service_test.go
+        - backend/internal/service/openai_gateway_service_session_isolation_test.go
+    semanticRules:
+      - openai-compact-path-suffix
+      - openai-passthrough-body-normalization
+      - openai-session-isolation
+    decisions:
+      default: official-required
+
+  - id: openai-responses-ws
+    name: OpenAI Responses WebSocket 主链
+    riskLevel: high
+    owners: [backend]
+    languages: [go]
+    chain:
+      routes:
+        - pathPattern: "/v1/responses/ws"
+      symbols:
+        - file: backend/internal/service/openai_ws_forwarder.go
+          functions:
+            - ProxyResponsesWebSocketFromClient
+            - forwardOpenAIWSV2
+        - file: backend/internal/service/openai_gateway_service.go
+          functions:
+            - GenerateSessionHash
+      tests:
+        - backend/internal/service/openai_ws_protocol_forward_test.go
+        - backend/internal/service/openai_ws_forwarder_success_test.go
+    semanticRules:
+      - openai-session-isolation
+      - openai-ws-previous-response-id
+      - openai-ws-turn-metadata-replay
+    decisions:
+      default: official-required
+
+  - id: gemini-native-v1beta
+    name: Gemini native v1beta 主链
+    riskLevel: high
+    owners: [backend]
+    languages: [go]
+    chain:
+      routes:
+        - pathPattern: "/v1beta/models/*"
+      symbols:
+        - file: backend/internal/handler/gemini_v1beta_handler.go
+          functions: [GeminiV1BetaModels]
+        - file: backend/internal/service/gemini_session.go
+          functions: [GenerateGeminiPrefixHash]
+      tests:
+        - backend/internal/handler/gemini_v1beta_handler_test.go
+        - backend/internal/service/gemini_session_test.go
+    semanticRules:
+      - gemini-digest-prefix-ua-normalization
+      - gemini-failover-semantics
+      - response-header-filter
+    decisions:
+      default: official-required
+
+  - id: gemini-messages-compat
+    name: Gemini messages compat 主链
+    riskLevel: high
+    owners: [backend]
+    languages: [go]
+    chain:
+      symbols:
+        - file: backend/internal/service/gemini_messages_compat_service.go
+          functions:
+            - Forward
+            - ForwardNative
+            - handleNativeNonStreamingResponse
+            - handleNativeStreamingResponse
+      tests:
+        - backend/internal/service/gemini_messages_compat_service_test.go
+    semanticRules:
+      - gemini-upstream-model-preserved
+      - response-header-filter
+      - observability-upstream-model
+    decisions:
+      default: official-required
