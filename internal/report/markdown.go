@@ -26,6 +26,15 @@ func (markdownReporter) Render(report model.AuditReport) ([]byte, error) {
 	if report.OfficialRepo.Commit != "" {
 		builder.WriteString(fmt.Sprintf("- Official Commit: `%s`\n", report.OfficialRepo.Commit))
 	}
+	if report.ManifestPath != "" {
+		builder.WriteString(fmt.Sprintf("- Manifest: `%s`\n", report.ManifestPath))
+	}
+	if report.DecisionFilePath != "" {
+		builder.WriteString(fmt.Sprintf("- Decision File: `%s`\n", report.DecisionFilePath))
+	}
+	if report.Baseline != nil {
+		builder.WriteString(fmt.Sprintf("- Baseline Verified: `%t`\n", report.Baseline.Valid))
+	}
 	builder.WriteString("\n## Summary\n\n")
 	builder.WriteString(fmt.Sprintf("- Features Scanned: `%d`\n", report.Summary.FeaturesScanned))
 	builder.WriteString(fmt.Sprintf("- Critical Findings: `%d`\n", report.Summary.CriticalFindings))
@@ -71,7 +80,12 @@ func (markdownReporter) Render(report model.AuditReport) ([]byte, error) {
 				builder.WriteString("- Evidence:\n")
 				for _, evidence := range finding.Evidence {
 					if evidence.FilePath != "" {
-						builder.WriteString(fmt.Sprintf("  - %s: `%s`\n", evidence.RepoSide, evidence.FilePath))
+						builder.WriteString(fmt.Sprintf("  - %s: `%s%s%s`\n",
+							evidence.RepoSide,
+							evidence.FilePath,
+							renderSymbolSuffix(evidence.SymbolName),
+							renderLineSuffix(evidence.StartLine, evidence.EndLine),
+						))
 					}
 				}
 			}
@@ -79,5 +93,50 @@ func (markdownReporter) Render(report model.AuditReport) ([]byte, error) {
 		}
 	}
 
+	actionPlan := buildActionPlan(report)
+	if len(actionPlan) > 0 {
+		builder.WriteString("\n## Action Plan\n\n")
+		for index, action := range actionPlan {
+			builder.WriteString(fmt.Sprintf("%d. %s\n", index+1, action))
+		}
+	}
+
 	return []byte(builder.String()), nil
+}
+
+func renderSymbolSuffix(symbol string) string {
+	if strings.TrimSpace(symbol) == "" {
+		return ""
+	}
+	return "#" + symbol
+}
+
+func renderLineSuffix(startLine, endLine int) string {
+	if startLine <= 0 {
+		return ""
+	}
+	if endLine > 0 && endLine != startLine {
+		return fmt.Sprintf(":%d-%d", startLine, endLine)
+	}
+	return fmt.Sprintf(":%d", startLine)
+}
+
+func buildActionPlan(report model.AuditReport) []string {
+	actions := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, feature := range report.Features {
+		for _, finding := range feature.Findings {
+			action := strings.TrimSpace(finding.RecommendedAction)
+			if action == "" {
+				continue
+			}
+			line := fmt.Sprintf("%s: %s", feature.ID, action)
+			if _, ok := seen[line]; ok {
+				continue
+			}
+			seen[line] = struct{}{}
+			actions = append(actions, line)
+		}
+	}
+	return actions
 }

@@ -14,7 +14,7 @@ import (
 var (
 	validRiskLevels = []string{"critical", "high", "medium", "low"}
 	validLanguages  = []string{"go", "ts", "typescript", "vue", "sql", "yaml", "json", "markdown"}
-	validFormats    = []string{"md", "json"}
+	validFormats    = []string{"md", "json", "bd"}
 )
 
 func Load(path string) (model.FeatureManifest, error) {

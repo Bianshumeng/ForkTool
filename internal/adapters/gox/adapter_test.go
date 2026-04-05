@@ -33,6 +33,7 @@ func TestDiscoverExtractsRoutesSymbolsAndTestsFromSource(t *testing.T) {
 	require.Contains(t, filterNodeKeys(nodes, model.NodeKindHandler), "backend/internal/handler/gateway_handler.go#CountTokens")
 	require.Contains(t, filterNodeKeys(nodes, model.NodeKindService), "backend/internal/service/gateway_service.go#ForwardCountTokens")
 	require.Contains(t, filterNodeKeys(nodes, model.NodeKindService), "backend/internal/service/gateway_service.go#buildCountTokensRequest")
+	require.Contains(t, filterNodeKeys(nodes, model.NodeKindService), "backend/internal/service/gateway_service.go#buildCountTokensSuffix")
 	require.Contains(t, filterNodeKeys(nodes, model.NodeKindTest), "backend/internal/service/gateway_service_test.go#TestForwardCountTokens")
 
 	var routeChecked bool
@@ -48,6 +49,10 @@ func TestDiscoverExtractsRoutesSymbolsAndTestsFromSource(t *testing.T) {
 			require.Greater(t, node.Range.StartLine, 0)
 			require.True(t, metadataBool(node.Metadata, "extracted"))
 			require.Equal(t, "go-ast", node.Metadata["source"])
+		}
+		if node.SymbolName == "buildCountTokensSuffix" {
+			require.Equal(t, "go-ast-derived-call", node.Metadata["source"])
+			require.Equal(t, "backend/internal/service/gateway_service.go#ForwardCountTokens", node.Metadata["derivedFrom"])
 		}
 	}
 	require.True(t, routeChecked)
@@ -134,18 +139,6 @@ func filterNodeKeys(nodes []model.ChainNode, kind model.NodeKind) []string {
 		keys = append(keys, node.FilePath+"#"+node.SymbolName)
 	}
 	return keys
-}
-
-func metadataBool(metadata map[string]any, key string) bool {
-	if metadata == nil {
-		return false
-	}
-	value, ok := metadata[key]
-	if !ok {
-		return false
-	}
-	booleanValue, ok := value.(bool)
-	return ok && booleanValue
 }
 
 func projectRoot(t *testing.T) string {

@@ -1,0 +1,5 @@
+server:
+  port: 8080
+
+status_page:
+  status_page_url: "https://status.example.com"

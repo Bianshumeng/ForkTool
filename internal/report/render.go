@@ -19,6 +19,8 @@ func NewReporter(format string) (Reporter, error) {
 		return markdownReporter{}, nil
 	case "json":
 		return jsonReporter{}, nil
+	case "bd":
+		return bdReporter{}, nil
 	default:
 		return nil, fmt.Errorf("unsupported report format %q", format)
 	}

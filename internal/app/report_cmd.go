@@ -25,7 +25,7 @@ func (c *CLI) newReportCommand() *cobra.Command {
 
 	renderCommand := &cobra.Command{
 		Use:   "render",
-		Short: "Render a saved JSON audit report into Markdown or JSON output",
+		Short: "Render a saved JSON audit report into Markdown, JSON, or bd draft output",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if strings.TrimSpace(inputPath) == "" {
 				return withExitCode(fmt.Errorf("input report path is required"), ExitInput)
@@ -77,7 +77,7 @@ func (c *CLI) newReportCommand() *cobra.Command {
 	}
 
 	renderCommand.Flags().StringVar(&inputPath, "input", "", "input report JSON path")
-	renderCommand.Flags().StringVar(&format, "format", "md", "output format: md or json")
+	renderCommand.Flags().StringVar(&format, "format", "md", "output format: md, json, or bd")
 	renderCommand.Flags().StringVar(&outputPath, "out", "", "optional output file path")
 	command.AddCommand(renderCommand)
 	return command

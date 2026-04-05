@@ -5,6 +5,7 @@ defaults:
   reportFormats:
     - md
     - json
+    - bd
   decisionFile: "./decisions/sub2api.local-decisions.yaml"
 
 features:

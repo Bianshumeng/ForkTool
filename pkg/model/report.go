@@ -67,6 +67,8 @@ type EvidenceRef struct {
 	RepoSide   string `json:"repoSide,omitempty"`
 	FilePath   string `json:"filePath,omitempty"`
 	SymbolName string `json:"symbolName,omitempty"`
+	StartLine  int    `json:"startLine,omitempty"`
+	EndLine    int    `json:"endLine,omitempty"`
 	Note       string `json:"note,omitempty"`
 }
 
@@ -112,13 +114,16 @@ type FeatureReport struct {
 }
 
 type AuditReport struct {
-	RunID           string          `json:"runId"`
-	GeneratedAt     time.Time       `json:"generatedAt"`
-	LocalRepo       RepoSnapshot    `json:"localRepo"`
-	OfficialRepo    RepoSnapshot    `json:"officialRepo"`
-	ManifestVersion int             `json:"manifestVersion"`
-	Summary         AuditSummary    `json:"summary"`
-	Features        []FeatureReport `json:"features"`
+	RunID            string                      `json:"runId"`
+	GeneratedAt      time.Time                   `json:"generatedAt"`
+	ManifestPath     string                      `json:"manifestPath,omitempty"`
+	DecisionFilePath string                      `json:"decisionFilePath,omitempty"`
+	LocalRepo        RepoSnapshot                `json:"localRepo"`
+	OfficialRepo     RepoSnapshot                `json:"officialRepo"`
+	ManifestVersion  int                         `json:"manifestVersion"`
+	Baseline         *BaselineVerificationResult `json:"baseline,omitempty"`
+	Summary          AuditSummary                `json:"summary"`
+	Features         []FeatureReport             `json:"features"`
 }
 
 type BaselineCheck struct {

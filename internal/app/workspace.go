@@ -14,6 +14,40 @@ import (
 	"forktool/pkg/model"
 )
 
+const defaultSub2APIManifestTemplate = `version: 1
+repoKind: sub2api
+
+defaults:
+  reportFormats:
+    - md
+    - json
+    - bd
+  decisionFile: "./decisions/sub2api.local-decisions.yaml"
+
+features:
+  - id: claude-count-tokens
+    name: Claude count_tokens 主链
+    riskLevel: critical
+    owners: [backend]
+    languages: [go]
+    chain:
+      routes:
+        - pathPattern: "/v1/messages/count_tokens"
+      symbols:
+        - file: backend/internal/service/gateway_service.go
+          functions:
+            - ForwardCountTokens
+            - buildCountTokensRequest
+      tests:
+        - backend/internal/service/gateway_anthropic_apikey_passthrough_test.go
+    semanticRules:
+      - claude-count-tokens-beta-suffix
+      - http-header-wire-casing
+      - response-header-filter
+    decisions:
+      default: official-required
+`
+
 type workspaceState struct {
 	Config     model.WorkspaceConfig
 	ConfigPath string
@@ -95,6 +129,7 @@ func initializeWorkspace(repoRoot, repoKind, toolVersion string, force bool) (wo
 		filepath.Join(workspaceDir, "runs"),
 		filepath.Join(workspaceDir, "baselines"),
 		filepath.Join(repoRoot, "decisions"),
+		filepath.Join(repoRoot, "manifests"),
 	} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			return workspaceState{}, fmt.Errorf("create %q: %w", directory, err)
@@ -120,7 +155,7 @@ func initializeWorkspace(repoRoot, repoKind, toolVersion string, force bool) (wo
 			Kind: "official",
 		},
 		Manifest: model.ManifestRef{
-			Path: "./examples/" + repoKind + ".manifest.example.yaml",
+			Path: "./manifests/" + repoKind + ".yaml",
 		},
 		DecisionFile: model.DecisionFileRef{
 			Path: "./decisions/" + filepath.Base(decisionPath),
@@ -133,6 +168,17 @@ func initializeWorkspace(repoRoot, repoKind, toolVersion string, force bool) (wo
 
 	if err := writeYAML(configPath, config); err != nil {
 		return workspaceState{}, err
+	}
+
+	manifestTemplatePath := filepath.Join(repoRoot, "manifests", repoKind+".yaml")
+	if force || !fileExists(manifestTemplatePath) {
+		content, err := manifestTemplateContent(repoRoot, repoKind)
+		if err != nil {
+			return workspaceState{}, fmt.Errorf("write manifest template: %w", err)
+		}
+		if err := os.WriteFile(manifestTemplatePath, content, 0o644); err != nil {
+			return workspaceState{}, fmt.Errorf("write manifest template: %w", err)
+		}
 	}
 
 	if force || !fileExists(decisionPath) {
@@ -262,4 +308,18 @@ func fileExists(path string) bool {
 		return false
 	}
 	return !info.IsDir()
+}
+
+func manifestTemplateContent(repoRoot, repoKind string) ([]byte, error) {
+	exampleManifestPath := filepath.Join(repoRoot, "examples", repoKind+".manifest.example.yaml")
+	if content, err := os.ReadFile(exampleManifestPath); err == nil {
+		return content, nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(repoKind)) {
+	case "sub2api":
+		return []byte(defaultSub2APIManifestTemplate), nil
+	default:
+		return nil, fmt.Errorf("no manifest template available for repo kind %q", repoKind)
+	}
 }

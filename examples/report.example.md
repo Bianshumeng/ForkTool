@@ -7,6 +7,7 @@
 - Official Tag: `v0.1.105`
 - Official Commit: `9398ea7af575a59065d4dd967f8277d235726563`
 - Manifest: `manifests/sub2api.yaml`
+- Decision File: `decisions/sub2api.local-decisions.yaml`
 
 ## Summary
 
@@ -25,8 +26,8 @@
 - Decision: `official-required`
 - Title: `count_tokens 上游 URL 丢失 beta=true`
 - Evidence:
-  - official: `backend/internal/service/gateway_service.go`
-  - local: `backend/internal/service/gateway_service.go`
+  - official: `backend/internal/service/gateway_service.go#buildCountTokensRequest:120`
+  - local: `backend/internal/service/gateway_service.go#buildCountTokensRequest:118`
 - Recommendation:
   - 回收为官方 `?beta=true` 组装逻辑
 

@@ -6,12 +6,17 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"forktool/internal/adapters/configx"
 	"forktool/internal/adapters/gox"
+	"forktool/internal/adapters/markdownx"
+	"forktool/internal/adapters/sqlx"
+	"forktool/internal/adapters/tsvue"
 	"forktool/internal/baseline"
 	"forktool/internal/decision"
 	"forktool/internal/discovery"
@@ -372,7 +377,13 @@ func (c *CLI) scanFeature(ctx context.Context, environment scanEnvironment, feat
 		return model.FeatureReport{}, model.FeatureChain{}, withExitCode(err, ExitInput)
 	}
 
-	manager := discovery.NewManager(gox.New())
+	manager := discovery.NewManager(
+		gox.New(),
+		configx.New(),
+		markdownx.New(),
+		sqlx.New(),
+		tsvue.New(),
+	)
 	var localNodes []model.ChainNode
 	if repoExists(environment.localRepo.Path) {
 		localNodes, err = manager.Discover(ctx, discovery.DiscoverRequest{
@@ -402,10 +413,13 @@ func (c *CLI) scanFeature(ctx context.Context, environment scanEnvironment, feat
 	if err != nil {
 		return model.FeatureReport{}, model.FeatureChain{}, err
 	}
+	findings = append(findings, buildCoverageFindings(featureChain)...)
 
 	supportedRules, unsupportedRules := splitSemanticRules(feature.SemanticRules)
 	notes := []string{
-		fmt.Sprintf("Go Adapter extracted %d local node(s) and %d official node(s).", countExtractedNodes(featureChain.LocalNodes), countExtractedNodes(featureChain.OfficialNodes)),
+		fmt.Sprintf("Discovery extracted %d local node(s) and %d official node(s).", countExtractedNodes(featureChain.LocalNodes), countExtractedNodes(featureChain.OfficialNodes)),
+		fmt.Sprintf("Local coverage: %s.", summarizeNodeKinds(featureChain.LocalNodes)),
+		fmt.Sprintf("Official coverage: %s.", summarizeNodeKinds(featureChain.OfficialNodes)),
 		fmt.Sprintf("Applied %d supported semantic rule(s): %s", len(supportedRules), strings.Join(supportedRules, ", ")),
 	}
 	if len(unsupportedRules) > 0 {
@@ -473,9 +487,11 @@ func selectFeatures(features []model.ManifestFeature, criticalOnly bool, selecte
 
 func buildAuditReport(runID string, environment scanEnvironment, manifestVersion int, featureReports []model.FeatureReport) model.AuditReport {
 	return model.AuditReport{
-		RunID:           runID,
-		GeneratedAt:     time.Now().UTC(),
-		ManifestVersion: manifestVersion,
+		RunID:            runID,
+		GeneratedAt:      time.Now().UTC(),
+		ManifestPath:     filepath.ToSlash(environment.manifestPath),
+		DecisionFilePath: filepath.ToSlash(environment.decisionPath),
+		ManifestVersion:  manifestVersion,
 		LocalRepo: model.RepoSnapshot{
 			Path: filepath.ToSlash(environment.localRepo.Path),
 			Kind: environment.localRepo.Kind,
@@ -487,6 +503,7 @@ func buildAuditReport(runID string, environment scanEnvironment, manifestVersion
 			Tag:       environment.officialRepo.Tag,
 			Commit:    environment.officialRepo.Commit,
 		},
+		Baseline: environment.baselineResult,
 		Features: featureReports,
 	}
 }
@@ -509,8 +526,14 @@ func repoExists(path string) bool {
 }
 
 func detectDiscoveryMode(featureChain model.FeatureChain) string {
-	if countExtractedNodes(featureChain.LocalNodes)+countExtractedNodes(featureChain.OfficialNodes) > 0 {
+	adapters := extractedAdapters(featureChain.LocalNodes, featureChain.OfficialNodes)
+	switch {
+	case len(adapters) > 1:
+		return strings.Join(adapters, "+")
+	case len(adapters) == 1 && adapters[0] == "gox":
 		return "gox-ast"
+	case len(adapters) == 1:
+		return adapters[0]
 	}
 	if len(featureChain.LocalNodes) > 0 || len(featureChain.OfficialNodes) > 0 {
 		return "manifest+gox-skeleton"
@@ -562,4 +585,164 @@ func splitSemanticRules(ruleIDs []string) (supported []string, unsupported []str
 		unsupported = append(unsupported, ruleID)
 	}
 	return supported, unsupported
+}
+
+func summarizeNodeKinds(nodes []model.ChainNode) string {
+	counts := make(map[model.NodeKind]int)
+	for _, node := range nodes {
+		if !metadataBool(node.Metadata, "extracted") {
+			continue
+		}
+		counts[node.Kind]++
+	}
+	if len(counts) == 0 {
+		return "none"
+	}
+
+	keys := make([]string, 0, len(counts))
+	for kind, count := range counts {
+		keys = append(keys, fmt.Sprintf("%s=%d", kind, count))
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
+
+func extractedAdapters(localNodes, officialNodes []model.ChainNode) []string {
+	seen := make(map[string]struct{})
+	for _, node := range append(slices.Clone(localNodes), officialNodes...) {
+		if !metadataBool(node.Metadata, "extracted") {
+			continue
+		}
+		adapterName, _ := node.Metadata["adapter"].(string)
+		if strings.TrimSpace(adapterName) == "" {
+			continue
+		}
+		seen[adapterName] = struct{}{}
+	}
+
+	adapters := make([]string, 0, len(seen))
+	for adapterName := range seen {
+		adapters = append(adapters, adapterName)
+	}
+	sort.Strings(adapters)
+	return adapters
+}
+
+func buildCoverageFindings(feature model.FeatureChain) []model.SemanticDiff {
+	findings := make([]model.SemanticDiff, 0)
+	if hasAnyLanguage(feature.Languages, "yaml", "json") {
+		appendCoverageFinding(&findings, coverageFinding(feature, []model.NodeKind{model.NodeKindConfig}, "high", "config-chain", "配置链证据本地缺失", "本地存在额外配置链证据", "official-required", "verify-config-chain"))
+	}
+	if hasAnyLanguage(feature.Languages, "markdown") {
+		appendCoverageFinding(&findings, coverageFinding(feature, []model.NodeKind{model.NodeKindDoc}, "low", "doc-coverage", "官方文档/决策证据未在本地命中", "本地存在额外文档/决策证据", "manual-merge", "review-doc-ledger"))
+	}
+	if hasAnyLanguage(feature.Languages, "sql") {
+		appendCoverageFinding(&findings, coverageFinding(feature, []model.NodeKind{model.NodeKindMigration}, "high", "migration-chain", "迁移链证据本地缺失", "本地存在额外迁移链证据", "config-chain-check", "verify-migration-chain"))
+	}
+	if hasAnyLanguage(feature.Languages, "ts", "typescript", "vue") {
+		appendCoverageFinding(&findings, coverageFinding(feature,
+			[]model.NodeKind{model.NodeKindPage, model.NodeKindNav, model.NodeKindAPI, model.NodeKindDTO, model.NodeKindStore},
+			"high",
+			"frontend-parity",
+			"前端 parity 证据本地缺失",
+			"本地存在额外前端 parity 证据",
+			"manual-merge",
+			"verify-frontend-feature-parity",
+		))
+	}
+	return findings
+}
+
+func coverageFinding(feature model.FeatureChain, kinds []model.NodeKind, severity, category, titleMissing, titleExtra, decisionTag, action string) *model.SemanticDiff {
+	localCount := countKinds(feature.LocalNodes, kinds...)
+	officialCount := countKinds(feature.OfficialNodes, kinds...)
+	if localCount == 0 && officialCount == 0 {
+		return nil
+	}
+	if localCount == officialCount {
+		return nil
+	}
+
+	title := titleMissing
+	description := fmt.Sprintf("官方命中 %d 个相关节点，本地命中 %d 个。", officialCount, localCount)
+	if localCount > officialCount {
+		title = titleExtra
+		description = fmt.Sprintf("本地命中 %d 个相关节点，官方命中 %d 个。", localCount, officialCount)
+	}
+
+	return &model.SemanticDiff{
+		FeatureID:         feature.ID,
+		Severity:          severity,
+		Category:          category,
+		Title:             title,
+		Description:       description,
+		Evidence:          buildCoverageEvidence(feature.LocalNodes, feature.OfficialNodes, kinds...),
+		DecisionTag:       decisionTag,
+		RecommendedAction: action,
+	}
+}
+
+func appendCoverageFinding(findings *[]model.SemanticDiff, finding *model.SemanticDiff) {
+	if finding != nil {
+		*findings = append(*findings, *finding)
+	}
+}
+
+func countKinds(nodes []model.ChainNode, kinds ...model.NodeKind) int {
+	count := 0
+	for _, node := range nodes {
+		if !metadataBool(node.Metadata, "extracted") {
+			continue
+		}
+		if slices.Contains(kinds, node.Kind) {
+			count++
+		}
+	}
+	return count
+}
+
+func buildCoverageEvidence(localNodes, officialNodes []model.ChainNode, kinds ...model.NodeKind) []model.EvidenceRef {
+	evidence := make([]model.EvidenceRef, 0, 2)
+	if node, ok := firstKindNode(localNodes, kinds...); ok {
+		evidence = append(evidence, model.EvidenceRef{
+			RepoSide:   "local",
+			FilePath:   node.FilePath,
+			SymbolName: node.SymbolName,
+			StartLine:  node.Range.StartLine,
+			EndLine:    node.Range.EndLine,
+		})
+	}
+	if node, ok := firstKindNode(officialNodes, kinds...); ok {
+		evidence = append(evidence, model.EvidenceRef{
+			RepoSide:   "official",
+			FilePath:   node.FilePath,
+			SymbolName: node.SymbolName,
+			StartLine:  node.Range.StartLine,
+			EndLine:    node.Range.EndLine,
+		})
+	}
+	return evidence
+}
+
+func firstKindNode(nodes []model.ChainNode, kinds ...model.NodeKind) (model.ChainNode, bool) {
+	for _, node := range nodes {
+		if !metadataBool(node.Metadata, "extracted") {
+			continue
+		}
+		if slices.Contains(kinds, node.Kind) {
+			return node, true
+		}
+	}
+	return model.ChainNode{}, false
+}
+
+func hasAnyLanguage(languages []string, candidates ...string) bool {
+	for _, language := range languages {
+		for _, candidate := range candidates {
+			if strings.EqualFold(language, candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -26,6 +26,13 @@ type parsedGoFile struct {
 	File         *ast.File
 }
 
+type functionRecord struct {
+	FilePath string
+	Parsed   *parsedGoFile
+	Decl     *ast.FuncDecl
+	Kind     model.NodeKind
+}
+
 type parserCache struct {
 	repoRoot string
 	files    map[string]*parsedGoFile
@@ -75,9 +82,15 @@ func (Adapter) Discover(_ context.Context, req discovery.DiscoverRequest) ([]mod
 		return nil, err
 	}
 
-	nodes := make([]model.ChainNode, 0, len(routeNodes)+len(symbolNodes)+len(testNodes)+len(derivedHandlerNodes))
+	derivedCallNodes, err := discoverRelatedCalls(cache, append(slices.Clone(symbolNodes), derivedHandlerNodes...), req.Feature, req.RepoSide)
+	if err != nil {
+		return nil, err
+	}
+
+	nodes := make([]model.ChainNode, 0, len(routeNodes)+len(symbolNodes)+len(testNodes)+len(derivedHandlerNodes)+len(derivedCallNodes))
 	nodes = append(nodes, routeNodes...)
 	nodes = append(nodes, derivedHandlerNodes...)
+	nodes = append(nodes, derivedCallNodes...)
 	nodes = append(nodes, symbolNodes...)
 	nodes = append(nodes, testNodes...)
 	return nodes, nil
@@ -536,11 +549,12 @@ func discoverSymbols(cache *parserCache, symbols []model.ManifestSymbol, repoSid
 				SymbolName: functionName,
 				Range:      sourceRange(parsed.FileSet, funcDecl.Pos(), funcDecl.End()),
 				Metadata: map[string]any{
-					"repoSide":  repoSide,
-					"adapter":   "gox",
-					"exists":    true,
-					"extracted": true,
-					"source":    "go-ast",
+					"repoSide":    repoSide,
+					"adapter":     "gox",
+					"exists":      true,
+					"extracted":   true,
+					"source":      "go-ast",
+					"callTargets": collectCallTargets(funcDecl),
 				},
 			})
 		}
@@ -667,6 +681,7 @@ func discoverDerivedHandlers(cache *parserCache, routeNodes, existingNodes []mod
 					"extracted":        true,
 					"source":           "go-ast-derived-handler",
 					"derivedFromRoute": true,
+					"callTargets":      collectCallTargets(funcDecl),
 				},
 			})
 			existingKeys[key] = struct{}{}
@@ -674,6 +689,255 @@ func discoverDerivedHandlers(cache *parserCache, routeNodes, existingNodes []mod
 	}
 
 	return derived, nil
+}
+
+func discoverRelatedCalls(cache *parserCache, seedNodes []model.ChainNode, feature model.ManifestFeature, repoSide string) ([]model.ChainNode, error) {
+	if len(seedNodes) == 0 {
+		return nil, nil
+	}
+
+	index, err := buildFunctionIndex(cache)
+	if err != nil {
+		return nil, err
+	}
+
+	hints := discovery.KeywordHints(feature)
+	derived := make([]model.ChainNode, 0)
+	existingKeys := existingNodeKeys(seedNodes)
+	queue := make([]model.ChainNode, 0, len(seedNodes))
+	for _, node := range seedNodes {
+		if !metadataBool(node.Metadata, "extracted") {
+			continue
+		}
+		queue = append(queue, node)
+	}
+
+	for len(queue) > 0 {
+		if len(derived) >= 32 {
+			break
+		}
+
+		current := queue[0]
+		queue = queue[1:]
+
+		depth := metadataInt(current.Metadata, "depth")
+		if depth >= 2 {
+			continue
+		}
+
+		record, ok := findFunctionRecord(index, current.FilePath, current.SymbolName)
+		if !ok || record.Decl == nil {
+			continue
+		}
+
+		callTargets := collectCallTargets(record.Decl)
+		addedForCurrent := 0
+		for _, targetName := range callTargets {
+			if len(derived) >= 32 || addedForCurrent >= 8 {
+				break
+			}
+
+			candidate, found := bestFunctionCandidate(index[targetName], hints, current.FilePath)
+			if !found {
+				continue
+			}
+
+			key := candidate.FilePath + "#" + candidate.Decl.Name.Name
+			if _, exists := existingKeys[key]; exists {
+				continue
+			}
+
+			derivedNode := model.ChainNode{
+				Kind:       candidate.Kind,
+				Language:   "go",
+				FilePath:   candidate.FilePath,
+				SymbolName: candidate.Decl.Name.Name,
+				Range:      sourceRange(candidate.Parsed.FileSet, candidate.Decl.Pos(), candidate.Decl.End()),
+				Metadata: map[string]any{
+					"repoSide":      repoSide,
+					"adapter":       "gox",
+					"exists":        true,
+					"extracted":     true,
+					"source":        "go-ast-derived-call",
+					"derivedFrom":   current.FilePath + "#" + current.SymbolName,
+					"depth":         depth + 1,
+					"callTargets":   collectCallTargets(candidate.Decl),
+					"matchedTarget": targetName,
+				},
+				Relations: []model.NodeRelation{{
+					Type:   "called-by",
+					Target: current.FilePath + "#" + current.SymbolName,
+				}},
+			}
+			derived = append(derived, derivedNode)
+			existingKeys[key] = struct{}{}
+			queue = append(queue, derivedNode)
+			addedForCurrent++
+		}
+	}
+
+	return derived, nil
+}
+
+func buildFunctionIndex(cache *parserCache) (map[string][]functionRecord, error) {
+	files, err := walkGoFiles(cache.repoRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	index := make(map[string][]functionRecord)
+	for _, filePath := range files {
+		if strings.HasSuffix(strings.ToLower(filePath), "_test.go") {
+			continue
+		}
+
+		parsed, err := cache.parse(filePath)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, decl := range parsed.File.Decls {
+			funcDecl, ok := decl.(*ast.FuncDecl)
+			if !ok || funcDecl.Name == nil {
+				continue
+			}
+			record := functionRecord{
+				FilePath: parsed.RelativePath,
+				Parsed:   parsed,
+				Decl:     funcDecl,
+				Kind:     kindForSymbol(parsed.RelativePath, funcDecl.Name.Name),
+			}
+			index[funcDecl.Name.Name] = append(index[funcDecl.Name.Name], record)
+		}
+	}
+
+	return index, nil
+}
+
+func walkGoFiles(root string) ([]string, error) {
+	files := make([]string, 0)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if shouldSkipDir(entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(entry.Name()) != ".go" {
+			return nil
+		}
+		relativePath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(relativePath))
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk go files: %w", err)
+	}
+	slices.Sort(files)
+	return files, nil
+}
+
+func findFunctionRecord(index map[string][]functionRecord, filePath, symbolName string) (functionRecord, bool) {
+	candidates, ok := index[symbolName]
+	if !ok {
+		return functionRecord{}, false
+	}
+	for _, candidate := range candidates {
+		if candidate.FilePath == filePath {
+			return candidate, true
+		}
+	}
+	return candidates[0], true
+}
+
+func bestFunctionCandidate(candidates []functionRecord, hints []string, currentFile string) (functionRecord, bool) {
+	if len(candidates) == 0 {
+		return functionRecord{}, false
+	}
+
+	best := functionRecord{}
+	bestScore := -1
+	for _, candidate := range candidates {
+		score := 0
+		if candidate.FilePath == currentFile {
+			score += 8
+		}
+		switch candidate.Kind {
+		case model.NodeKindService:
+			score += 5
+		case model.NodeKindHelper, model.NodeKindTransformer:
+			score += 4
+		case model.NodeKindHandler:
+			score += 3
+		case model.NodeKindRoute:
+			score--
+		}
+		lowerPath := strings.ToLower(candidate.FilePath)
+		for _, hint := range hints {
+			if strings.Contains(lowerPath, hint) {
+				score++
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			best = candidate
+		}
+	}
+	return best, bestScore >= 0
+}
+
+func collectCallTargets(funcDecl *ast.FuncDecl) []string {
+	if funcDecl == nil || funcDecl.Body == nil {
+		return nil
+	}
+
+	targets := make([]string, 0)
+	ast.Inspect(funcDecl.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+
+		targetName := callTargetName(call.Fun)
+		if shouldIgnoreCallTarget(targetName) {
+			return true
+		}
+
+		targets = append(targets, targetName)
+		return true
+	})
+
+	return uniqueStrings(targets)
+}
+
+func callTargetName(expr ast.Expr) string {
+	switch typed := expr.(type) {
+	case *ast.Ident:
+		return typed.Name
+	case *ast.SelectorExpr:
+		return typed.Sel.Name
+	default:
+		return ""
+	}
+}
+
+func shouldIgnoreCallTarget(target string) bool {
+	if strings.TrimSpace(target) == "" {
+		return true
+	}
+
+	switch target {
+	case "append", "cap", "clear", "close", "copy", "delete", "len", "make", "max", "min", "new", "panic", "print", "println", "recover":
+		return true
+	default:
+		return false
+	}
 }
 
 func collectRouteFiles(root string) ([]string, error) {
@@ -685,8 +949,7 @@ func collectRouteFiles(root string) ([]string, error) {
 		}
 
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", ".forktool", ".cache", "node_modules", "vendor":
+			if shouldSkipDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -725,8 +988,7 @@ func collectHandlerFiles(root string) ([]string, error) {
 		}
 
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", ".forktool", ".cache", "node_modules", "vendor":
+			if shouldSkipDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -774,6 +1036,15 @@ func isRouteCandidateFile(filePath string) bool {
 	default:
 		return false
 	}
+}
+
+func shouldSkipDir(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case ".git", ".forktool", ".cache", "node_modules", "vendor", ".beads", ".go-work", ".gocache", ".gopath", "%gomodcache%", "%gopath%", "%systemdrive%", "${appdata}", ".codex", ".codex-cache", ".shared":
+		return true
+	}
+
+	return strings.HasPrefix(strings.ToLower(name), ".tmp")
 }
 
 func kindForSymbol(filePath, functionName string) model.NodeKind {
@@ -1006,6 +1277,38 @@ func stringLiteral(expr ast.Expr) (string, bool) {
 		return "", false
 	}
 	return unquoted, true
+}
+
+func metadataBool(metadata map[string]any, key string) bool {
+	if metadata == nil {
+		return false
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return false
+	}
+	booleanValue, ok := value.(bool)
+	return ok && booleanValue
+}
+
+func metadataInt(metadata map[string]any, key string) int {
+	if metadata == nil {
+		return 0
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	default:
+		return 0
+	}
 }
 
 func sourceRange(fileSet *token.FileSet, start, end token.Pos) model.SourceRange {

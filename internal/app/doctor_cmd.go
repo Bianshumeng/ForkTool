@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -51,6 +52,7 @@ func (c *CLI) newDoctorCommand() *cobra.Command {
 			result.Checks = append(result.Checks, checkDirectory("workspace-dir", workspaceDir))
 			result.Checks = append(result.Checks, checkDirectory("runs-dir", filepath.Join(workspaceDir, "runs")))
 			result.Checks = append(result.Checks, checkDirectory("cache-dir", filepath.Join(workspaceDir, "cache")))
+			result.Checks = append(result.Checks, checkDirectory("baselines-dir", filepath.Join(workspaceDir, "baselines")))
 
 			if found {
 				manifestPath := resolveWorkspacePath(workspace.RepoRoot, workspace.Config.Manifest.Path)
@@ -71,6 +73,21 @@ func (c *CLI) newDoctorCommand() *cobra.Command {
 					})
 					result.Ready = result.Ready && validation.Valid
 				}
+
+				decisionPath := resolveWorkspacePath(workspace.RepoRoot, workspace.Config.DecisionFile.Path)
+				result.Checks = append(result.Checks, checkFile("decision-file", decisionPath))
+				result.Checks = append(result.Checks, checkDirectory("output-dir", resolveWorkspacePath(workspace.RepoRoot, workspace.Config.Output.Dir)))
+				result.Checks = append(result.Checks, checkConfiguredRepo("local-repo", resolveWorkspacePath(workspace.RepoRoot, workspace.Config.LocalRepo.Path)))
+				result.Checks = append(result.Checks, checkConfiguredRepo("official-repo", resolveWorkspacePath(workspace.RepoRoot, workspace.Config.OfficialRepo.Path)))
+				result.Checks = append(result.Checks, checkBaselineInputs(workspace.Config))
+
+				localRepoRoot := resolveWorkspacePath(workspace.RepoRoot, workspace.Config.LocalRepo.Path)
+				if localRepoRoot != "" {
+					result.Checks = append(result.Checks, checkOptionalDirectory("backend-dir", filepath.Join(localRepoRoot, "backend")))
+					result.Checks = append(result.Checks, checkOptionalDirectory("frontend-dir", filepath.Join(localRepoRoot, "frontend")))
+					result.Checks = append(result.Checks, checkOptionalDirectory("deploy-dir", filepath.Join(localRepoRoot, "deploy")))
+					result.Checks = append(result.Checks, checkOptionalDirectory("docs-dir", filepath.Join(localRepoRoot, "docs")))
+				}
 			} else {
 				result.Ready = false
 				result.Checks = append(result.Checks, model.BaselineCheck{
@@ -90,6 +107,13 @@ func (c *CLI) newDoctorCommand() *cobra.Command {
 }
 
 func checkDirectory(name, path string) model.BaselineCheck {
+	if strings.TrimSpace(path) == "" {
+		return model.BaselineCheck{
+			Name:   name,
+			Passed: false,
+			Detail: "path is empty",
+		}
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return model.BaselineCheck{
@@ -109,6 +133,88 @@ func checkDirectory(name, path string) model.BaselineCheck {
 		Name:   name,
 		Passed: true,
 		Actual: filepath.ToSlash(path),
+	}
+}
+
+func checkOptionalDirectory(name, path string) model.BaselineCheck {
+	if strings.TrimSpace(path) == "" {
+		return model.BaselineCheck{Name: name, Passed: false, Detail: "path is empty"}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return model.BaselineCheck{
+			Name:   name,
+			Passed: false,
+			Detail: err.Error(),
+		}
+	}
+	return model.BaselineCheck{
+		Name:   name,
+		Passed: info.IsDir(),
+		Actual: filepath.ToSlash(path),
+	}
+}
+
+func checkFile(name, path string) model.BaselineCheck {
+	if strings.TrimSpace(path) == "" {
+		return model.BaselineCheck{Name: name, Passed: false, Detail: "path is empty"}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return model.BaselineCheck{
+			Name:   name,
+			Passed: false,
+			Detail: err.Error(),
+		}
+	}
+	if info.IsDir() {
+		return model.BaselineCheck{
+			Name:   name,
+			Passed: false,
+			Detail: "path exists but is a directory",
+		}
+	}
+	return model.BaselineCheck{
+		Name:   name,
+		Passed: true,
+		Actual: filepath.ToSlash(path),
+	}
+}
+
+func checkConfiguredRepo(name, path string) model.BaselineCheck {
+	if strings.TrimSpace(path) == "" {
+		return model.BaselineCheck{
+			Name:   name,
+			Passed: false,
+			Detail: "repo path is empty",
+		}
+	}
+	return checkDirectory(name, path)
+}
+
+func checkBaselineInputs(config model.WorkspaceConfig) model.BaselineCheck {
+	remoteConfigured := strings.TrimSpace(config.OfficialRepo.RemoteURL) != ""
+	revisionConfigured := strings.TrimSpace(config.OfficialRepo.Tag) != "" || strings.TrimSpace(config.OfficialRepo.Commit) != ""
+
+	if remoteConfigured && revisionConfigured {
+		return model.BaselineCheck{
+			Name:   "baseline-inputs",
+			Passed: true,
+			Detail: "official repo path, remote, and revision are configured",
+		}
+	}
+
+	missing := make([]string, 0, 2)
+	if !remoteConfigured {
+		missing = append(missing, "remoteUrl")
+	}
+	if !revisionConfigured {
+		missing = append(missing, "tag/commit")
+	}
+	return model.BaselineCheck{
+		Name:   "baseline-inputs",
+		Passed: false,
+		Detail: "missing " + strings.Join(missing, ", "),
 	}
 }
 

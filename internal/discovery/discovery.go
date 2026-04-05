@@ -34,19 +34,30 @@ func (m *Manager) Discover(ctx context.Context, req DiscoverRequest) ([]model.Ch
 	}
 
 	collected := make([]model.ChainNode, 0)
-	for _, language := range req.Feature.Languages {
-		language = strings.ToLower(strings.TrimSpace(language))
-		for _, adapter := range m.adapters {
-			if !adapter.SupportsLanguage(language) {
-				continue
-			}
-
-			nodes, err := adapter.Discover(ctx, req)
-			if err != nil {
-				return nil, err
-			}
-			collected = append(collected, nodes...)
+	invoked := make(map[string]struct{}, len(m.adapters))
+	for _, adapter := range m.adapters {
+		if _, ok := invoked[adapter.Name()]; ok {
+			continue
 		}
+
+		supported := false
+		for _, language := range req.Feature.Languages {
+			language = strings.ToLower(strings.TrimSpace(language))
+			if adapter.SupportsLanguage(language) {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			continue
+		}
+
+		nodes, err := adapter.Discover(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		collected = append(collected, nodes...)
+		invoked[adapter.Name()] = struct{}{}
 	}
 
 	return collected, nil

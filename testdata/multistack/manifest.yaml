@@ -1,0 +1,20 @@
+version: 1
+repoKind: sub2api
+features:
+  - id: status-page-settings
+    name: Status page settings chain
+    riskLevel: high
+    languages: [go, yaml, markdown, sql, ts, vue]
+    chain:
+      routes:
+        - pathPattern: "/admin/settings/status-page"
+      symbols:
+        - file: backend/internal/service/setting_service.go
+          functions:
+            - UpdateStatusPageURL
+      tests:
+        - backend/internal/service/setting_service_test.go
+    semanticRules:
+      - test-file-presence
+    decisions:
+      default: official-required

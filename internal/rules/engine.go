@@ -383,27 +383,15 @@ func buildEvidence(feature model.FeatureChain, input ruleInput, localTokens, off
 	evidence := make([]model.EvidenceRef, 0, 4)
 
 	if localPath := bestEvidenceFile(feature.LocalNodes, input.localContents, localTokens); localPath != "" {
-		evidence = append(evidence, model.EvidenceRef{
-			RepoSide: "local",
-			FilePath: localPath,
-		})
+		evidence = append(evidence, nodeEvidence("local", findEvidenceNode(feature.LocalNodes, localPath)))
 	} else if len(feature.LocalNodes) > 0 {
-		evidence = append(evidence, model.EvidenceRef{
-			RepoSide: "local",
-			FilePath: firstNodeFile(feature.LocalNodes),
-		})
+		evidence = append(evidence, nodeEvidence("local", firstEvidenceNode(feature.LocalNodes)))
 	}
 
 	if officialPath := bestEvidenceFile(feature.OfficialNodes, input.officialContents, officialTokens); officialPath != "" {
-		evidence = append(evidence, model.EvidenceRef{
-			RepoSide: "official",
-			FilePath: officialPath,
-		})
+		evidence = append(evidence, nodeEvidence("official", findEvidenceNode(feature.OfficialNodes, officialPath)))
 	} else if len(feature.OfficialNodes) > 0 {
-		evidence = append(evidence, model.EvidenceRef{
-			RepoSide: "official",
-			FilePath: firstNodeFile(feature.OfficialNodes),
-		})
+		evidence = append(evidence, nodeEvidence("official", firstEvidenceNode(feature.OfficialNodes)))
 	}
 
 	return evidence
@@ -522,6 +510,34 @@ func firstNodeFile(nodes []model.ChainNode) string {
 		}
 	}
 	return ""
+}
+
+func findEvidenceNode(nodes []model.ChainNode, filePath string) model.ChainNode {
+	for _, node := range nodes {
+		if node.FilePath == filePath {
+			return node
+		}
+	}
+	return model.ChainNode{FilePath: filePath}
+}
+
+func firstEvidenceNode(nodes []model.ChainNode) model.ChainNode {
+	for _, node := range nodes {
+		if strings.TrimSpace(node.FilePath) != "" {
+			return node
+		}
+	}
+	return model.ChainNode{}
+}
+
+func nodeEvidence(repoSide string, node model.ChainNode) model.EvidenceRef {
+	return model.EvidenceRef{
+		RepoSide:   repoSide,
+		FilePath:   node.FilePath,
+		SymbolName: node.SymbolName,
+		StartLine:  node.Range.StartLine,
+		EndLine:    node.Range.EndLine,
+	}
 }
 
 func fileSetContainsAll(contents map[string]string, tokens []string) bool {
