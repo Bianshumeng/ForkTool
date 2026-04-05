@@ -1,0 +1,21 @@
+version: 1
+repoKind: sub2api
+features:
+  - id: claude-count-tokens
+    name: Claude count_tokens 主链
+    riskLevel: critical
+    languages: [go]
+    chain:
+      routes:
+        - pathPattern: "/v1/messages/count_tokens"
+      symbols:
+        - file: backend/internal/service/gateway_service.go
+          functions:
+            - ForwardCountTokens
+            - buildCountTokensRequest
+      tests:
+        - backend/internal/service/gateway_service_test.go
+    semanticRules:
+      - claude-count-tokens-beta-suffix
+    decisions:
+      default: official-required

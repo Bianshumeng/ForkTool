@@ -52,6 +52,32 @@ func TestScanFeatureCommandWritesPlaceholderReport(t *testing.T) {
 	require.FileExists(t, filepath.Join(outputDir, "report.json"))
 }
 
+func TestScanFeatureCommandUsesGoASTDiscovery(t *testing.T) {
+	workdir := t.TempDir()
+	manifestPath := filepath.Join(projectRoot(t), "testdata", "gox", "manifest.yaml")
+	repoPath := filepath.Join(projectRoot(t), "testdata", "gox", "repo")
+	outputDir := filepath.Join(workdir, "out")
+
+	stdout, _, err := executeCommand(t, workdir,
+		"scan", "feature",
+		"--feature", "claude-count-tokens",
+		"--manifest", manifestPath,
+		"--local", repoPath,
+		"--official", repoPath,
+		"--format", "json",
+		"--out", outputDir,
+	)
+	require.NoError(t, err)
+	require.Contains(t, stdout, `"discoveryMode": "gox-ast"`)
+	require.Contains(t, stdout, `"localNodeCount": 4`)
+	require.Contains(t, stdout, `"officialNodeCount": 4`)
+
+	reportContent, readErr := os.ReadFile(filepath.Join(outputDir, "report.json"))
+	require.NoError(t, readErr)
+	require.Contains(t, string(reportContent), `"status": "discovered"`)
+	require.Contains(t, string(reportContent), `"source": "go-ast"`)
+}
+
 func executeCommand(t *testing.T, workdir string, args ...string) (string, string, error) {
 	t.Helper()
 

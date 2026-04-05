@@ -164,11 +164,13 @@ type RunContext struct {
 }
 
 type ScanFeatureResult struct {
-	FeatureID      string   `json:"featureId"`
-	RunID          string   `json:"runId"`
-	OutputDir      string   `json:"outputDir"`
-	ContextPath    string   `json:"contextPath"`
-	ReportFiles    []string `json:"reportFiles"`
-	BaselineStatus string   `json:"baselineStatus"`
-	DiscoveryMode  string   `json:"discoveryMode"`
+	FeatureID         string   `json:"featureId"`
+	RunID             string   `json:"runId"`
+	OutputDir         string   `json:"outputDir"`
+	ContextPath       string   `json:"contextPath"`
+	ReportFiles       []string `json:"reportFiles"`
+	BaselineStatus    string   `json:"baselineStatus"`
+	DiscoveryMode     string   `json:"discoveryMode"`
+	LocalNodeCount    int      `json:"localNodeCount"`
+	OfficialNodeCount int      `json:"officialNodeCount"`
 }

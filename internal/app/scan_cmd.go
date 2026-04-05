@@ -161,10 +161,7 @@ func (c *CLI) newScanCommand() *cobra.Command {
 				return withExitCode(err, ExitInput)
 			}
 
-			discoveryMode := "manifest-only"
-			if len(featureChain.LocalNodes) > 0 || len(featureChain.OfficialNodes) > 0 {
-				discoveryMode = "manifest+gox-skeleton"
-			}
+			discoveryMode := detectDiscoveryMode(featureChain)
 
 			report := buildFeaturePlaceholderReport(runID, loadedManifest.Version, localRepo, officialRepo, featureChain)
 			reporting.PopulateSummary(&report)
@@ -199,13 +196,15 @@ func (c *CLI) newScanCommand() *cobra.Command {
 			}
 
 			result := model.ScanFeatureResult{
-				FeatureID:      feature.ID,
-				RunID:          runID,
-				OutputDir:      filepath.ToSlash(runDir),
-				ContextPath:    contextPath,
-				ReportFiles:    reportFiles,
-				BaselineStatus: baselineStatus,
-				DiscoveryMode:  discoveryMode,
+				FeatureID:         feature.ID,
+				RunID:             runID,
+				OutputDir:         filepath.ToSlash(runDir),
+				ContextPath:       contextPath,
+				ReportFiles:       reportFiles,
+				BaselineStatus:    baselineStatus,
+				DiscoveryMode:     discoveryMode,
+				LocalNodeCount:    len(featureChain.LocalNodes),
+				OfficialNodeCount: len(featureChain.OfficialNodes),
 			}
 			if err := cliui.WriteJSON(cmd.OutOrStdout(), result); err != nil {
 				return err
@@ -251,6 +250,12 @@ func repoExists(path string) bool {
 }
 
 func buildFeaturePlaceholderReport(runID string, manifestVersion int, localRepo, officialRepo model.RepoConfig, featureChain model.FeatureChain) model.AuditReport {
+	discoveredNodeCount := countExtractedNodes(featureChain.LocalNodes) + countExtractedNodes(featureChain.OfficialNodes)
+	status := "placeholder"
+	if discoveredNodeCount > 0 {
+		status = "discovered"
+	}
+
 	report := model.AuditReport{
 		RunID:           runID,
 		GeneratedAt:     time.Now().UTC(),
@@ -271,16 +276,51 @@ func buildFeaturePlaceholderReport(runID string, manifestVersion int, localRepo,
 				ID:            featureChain.ID,
 				Name:          featureChain.Name,
 				RiskLevel:     featureChain.RiskLevel,
-				Status:        "placeholder",
+				Status:        status,
 				SemanticRules: featureChain.SemanticRules,
 				LocalNodes:    featureChain.LocalNodes,
 				OfficialNodes: featureChain.OfficialNodes,
 				Notes: []string{
-					"Go Adapter skeleton is active and currently emits manifest-driven route, handler/service symbol, and test nodes.",
-					"Rule engine findings are not implemented yet; this report verifies manifest loading, baseline plumbing, IR assembly, and report output.",
+					fmt.Sprintf("Go Adapter extracted %d node(s) from source files in this run.", discoveredNodeCount),
+					"Current Go extraction covers route string matches, Go function declarations, and test function declarations.",
+					"Rule engine findings are not implemented yet; this report currently validates manifest loading, baseline plumbing, IR assembly, and source-backed discovery output.",
 				},
 			},
 		},
 	}
 	return report
+}
+
+func detectDiscoveryMode(featureChain model.FeatureChain) string {
+	if countExtractedNodes(featureChain.LocalNodes)+countExtractedNodes(featureChain.OfficialNodes) > 0 {
+		return "gox-ast"
+	}
+	if len(featureChain.LocalNodes) > 0 || len(featureChain.OfficialNodes) > 0 {
+		return "manifest+gox-skeleton"
+	}
+	return "manifest-only"
+}
+
+func countExtractedNodes(nodes []model.ChainNode) int {
+	count := 0
+	for _, node := range nodes {
+		if metadataBool(node.Metadata, "extracted") {
+			count++
+		}
+	}
+	return count
+}
+
+func metadataBool(metadata map[string]any, key string) bool {
+	if metadata == nil {
+		return false
+	}
+
+	value, ok := metadata[key]
+	if !ok {
+		return false
+	}
+
+	booleanValue, ok := value.(bool)
+	return ok && booleanValue
 }
