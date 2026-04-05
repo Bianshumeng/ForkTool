@@ -173,6 +173,36 @@ func TestEngineApplySupportsAdditionalRules(t *testing.T) {
 	}
 }
 
+func TestBuildEvidencePrefersSourceFilesOverTests(t *testing.T) {
+	feature := model.FeatureChain{
+		ID: "evidence-pref",
+		LocalNodes: []model.ChainNode{
+			{Kind: model.NodeKindService, FilePath: "backend/internal/service/openai_gateway_service.go"},
+			{Kind: model.NodeKindTest, FilePath: "backend/internal/service/openai_gateway_service_test.go"},
+		},
+		OfficialNodes: []model.ChainNode{
+			{Kind: model.NodeKindService, FilePath: "backend/internal/service/openai_gateway_service.go"},
+			{Kind: model.NodeKindTest, FilePath: "backend/internal/service/openai_gateway_service_test.go"},
+		},
+	}
+
+	input := ruleInput{
+		localContents: map[string]string{
+			"backend/internal/service/openai_gateway_service.go":      "normalizeOpenAIPassthroughOAuthBody",
+			"backend/internal/service/openai_gateway_service_test.go": "normalizeOpenAIPassthroughOAuthBody",
+		},
+		officialContents: map[string]string{
+			"backend/internal/service/openai_gateway_service.go":      "normalizeOpenAIPassthroughOAuthBody",
+			"backend/internal/service/openai_gateway_service_test.go": "normalizeOpenAIPassthroughOAuthBody",
+		},
+	}
+
+	evidence := buildEvidence(feature, input, []string{"normalizeOpenAIPassthroughOAuthBody"}, []string{"normalizeOpenAIPassthroughOAuthBody"})
+	require.Len(t, evidence, 2)
+	require.Equal(t, "backend/internal/service/openai_gateway_service.go", evidence[0].FilePath)
+	require.Equal(t, "backend/internal/service/openai_gateway_service.go", evidence[1].FilePath)
+}
+
 func writeRuleCaseFile(t *testing.T, repoRoot, relativePath, content string) {
 	t.Helper()
 

@@ -70,8 +70,14 @@ func (Adapter) Discover(_ context.Context, req discovery.DiscoverRequest) ([]mod
 		return nil, err
 	}
 
-	nodes := make([]model.ChainNode, 0, len(routeNodes)+len(symbolNodes)+len(testNodes))
+	derivedHandlerNodes, err := discoverDerivedHandlers(cache, routeNodes, symbolNodes, req.RepoSide)
+	if err != nil {
+		return nil, err
+	}
+
+	nodes := make([]model.ChainNode, 0, len(routeNodes)+len(symbolNodes)+len(testNodes)+len(derivedHandlerNodes))
 	nodes = append(nodes, routeNodes...)
+	nodes = append(nodes, derivedHandlerNodes...)
 	nodes = append(nodes, symbolNodes...)
 	nodes = append(nodes, testNodes...)
 	return nodes, nil
@@ -614,6 +620,62 @@ func discoverTests(cache *parserCache, testFiles []string, repoSide string) ([]m
 	return nodes, nil
 }
 
+func discoverDerivedHandlers(cache *parserCache, routeNodes, existingNodes []model.ChainNode, repoSide string) ([]model.ChainNode, error) {
+	handlerFiles, err := collectHandlerFiles(cache.repoRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	targetNames := collectHandlerTargetNames(routeNodes)
+	if len(targetNames) == 0 || len(handlerFiles) == 0 {
+		return nil, nil
+	}
+
+	existingKeys := existingNodeKeys(existingNodes)
+	derived := make([]model.ChainNode, 0)
+	for _, handlerFile := range handlerFiles {
+		parsed, err := cache.parse(handlerFile)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, decl := range parsed.File.Decls {
+			funcDecl, ok := decl.(*ast.FuncDecl)
+			if !ok || funcDecl.Name == nil {
+				continue
+			}
+
+			if _, ok := targetNames[funcDecl.Name.Name]; !ok {
+				continue
+			}
+
+			key := parsed.RelativePath + "#" + funcDecl.Name.Name
+			if _, exists := existingKeys[key]; exists {
+				continue
+			}
+
+			derived = append(derived, model.ChainNode{
+				Kind:       model.NodeKindHandler,
+				Language:   "go",
+				FilePath:   parsed.RelativePath,
+				SymbolName: funcDecl.Name.Name,
+				Range:      sourceRange(parsed.FileSet, funcDecl.Pos(), funcDecl.End()),
+				Metadata: map[string]any{
+					"repoSide":         repoSide,
+					"adapter":          "gox",
+					"exists":           true,
+					"extracted":        true,
+					"source":           "go-ast-derived-handler",
+					"derivedFromRoute": true,
+				},
+			})
+			existingKeys[key] = struct{}{}
+		}
+	}
+
+	return derived, nil
+}
+
 func collectRouteFiles(root string) ([]string, error) {
 	files := make([]string, 0)
 
@@ -648,6 +710,46 @@ func collectRouteFiles(root string) ([]string, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("walk route files: %w", err)
+	}
+
+	slices.Sort(files)
+	return files, nil
+}
+
+func collectHandlerFiles(root string) ([]string, error) {
+	files := make([]string, 0)
+
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", ".forktool", ".cache", "node_modules", "vendor":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if filepath.Ext(entry.Name()) != ".go" || strings.HasSuffix(strings.ToLower(entry.Name()), "_test.go") {
+			return nil
+		}
+
+		relativePath, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		normalized := filepath.ToSlash(relativePath)
+		if !strings.Contains(strings.ToLower(normalized), "/handler/") {
+			return nil
+		}
+
+		files = append(files, normalized)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk handler files: %w", err)
 	}
 
 	slices.Sort(files)
@@ -812,6 +914,56 @@ func uniqueStrings(values []string) []string {
 		unique = append(unique, value)
 	}
 	return unique
+}
+
+func collectHandlerTargetNames(routeNodes []model.ChainNode) map[string]struct{} {
+	targets := make(map[string]struct{})
+	for _, node := range routeNodes {
+		if node.Kind != model.NodeKindRoute {
+			continue
+		}
+
+		handlerTargets, ok := node.Metadata["handlerTargets"].([]string)
+		if !ok {
+			continue
+		}
+
+		for _, target := range handlerTargets {
+			if !looksLikeHandlerTarget(target) {
+				continue
+			}
+			name := targetLeaf(target)
+			if name == "" {
+				continue
+			}
+			targets[name] = struct{}{}
+		}
+	}
+	return targets
+}
+
+func existingNodeKeys(nodes []model.ChainNode) map[string]struct{} {
+	keys := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		if strings.TrimSpace(node.FilePath) == "" || strings.TrimSpace(node.SymbolName) == "" {
+			continue
+		}
+		keys[node.FilePath+"#"+node.SymbolName] = struct{}{}
+	}
+	return keys
+}
+
+func looksLikeHandlerTarget(target string) bool {
+	return strings.Contains(target, "Gateway.") || strings.Contains(strings.ToLower(target), "handler")
+}
+
+func targetLeaf(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	parts := strings.Split(target, ".")
+	return parts[len(parts)-1]
 }
 
 func joinRoutePath(prefix, route string) string {

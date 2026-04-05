@@ -78,8 +78,8 @@ func TestScanFeatureCommandUsesGoASTDiscovery(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Contains(t, stdout, `"discoveryMode": "gox-ast"`)
-	require.Contains(t, stdout, `"localNodeCount": 4`)
-	require.Contains(t, stdout, `"officialNodeCount": 4`)
+	require.Contains(t, stdout, `"localNodeCount": 5`)
+	require.Contains(t, stdout, `"officialNodeCount": 5`)
 
 	reportContent, readErr := os.ReadFile(filepath.Join(outputDir, "report.json"))
 	require.NoError(t, readErr)

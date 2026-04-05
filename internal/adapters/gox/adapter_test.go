@@ -30,6 +30,7 @@ func TestDiscoverExtractsRoutesSymbolsAndTestsFromSource(t *testing.T) {
 	require.NotEmpty(t, nodes)
 
 	require.Contains(t, filterNodeKeys(nodes, model.NodeKindRoute), "backend/internal/server/routes/gateway.go#RegisterGatewayRoutes")
+	require.Contains(t, filterNodeKeys(nodes, model.NodeKindHandler), "backend/internal/handler/gateway_handler.go#CountTokens")
 	require.Contains(t, filterNodeKeys(nodes, model.NodeKindService), "backend/internal/service/gateway_service.go#ForwardCountTokens")
 	require.Contains(t, filterNodeKeys(nodes, model.NodeKindService), "backend/internal/service/gateway_service.go#buildCountTokensRequest")
 	require.Contains(t, filterNodeKeys(nodes, model.NodeKindTest), "backend/internal/service/gateway_service_test.go#TestForwardCountTokens")
@@ -76,13 +77,14 @@ func TestDiscoverMatchesWildcardRoutesWithGroupPrefix(t *testing.T) {
 		RepoSide: "official",
 	})
 	require.NoError(t, err)
-	require.Len(t, nodes, 1)
+	require.Len(t, nodes, 2)
 
 	routeNode := nodes[0]
 	require.Equal(t, model.NodeKindRoute, routeNode.Kind)
 	require.Equal(t, "/v1/responses/*subpath", routeNode.Metadata["matchedFullPath"])
 	require.Equal(t, "h.OpenAIGateway.Responses", routeNode.Metadata["primaryHandler"])
 	require.Contains(t, routeNode.Metadata["handlerTargets"], "h.OpenAIGateway.Responses")
+	require.Contains(t, filterNodeKeys(nodes, model.NodeKindHandler), "backend/internal/handler/gateway_handler.go#Responses")
 }
 
 func TestDiscoverFallsBackWhenSymbolOrTestIsMissing(t *testing.T) {

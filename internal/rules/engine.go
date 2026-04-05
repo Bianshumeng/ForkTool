@@ -382,7 +382,7 @@ func (e Engine) compareTests(ruleID string, feature model.FeatureChain, decision
 func buildEvidence(feature model.FeatureChain, input ruleInput, localTokens, officialTokens []string) []model.EvidenceRef {
 	evidence := make([]model.EvidenceRef, 0, 4)
 
-	if localPath := firstMatchingFile(input.localContents, localTokens); localPath != "" {
+	if localPath := bestEvidenceFile(feature.LocalNodes, input.localContents, localTokens); localPath != "" {
 		evidence = append(evidence, model.EvidenceRef{
 			RepoSide: "local",
 			FilePath: localPath,
@@ -394,7 +394,7 @@ func buildEvidence(feature model.FeatureChain, input ruleInput, localTokens, off
 		})
 	}
 
-	if officialPath := firstMatchingFile(input.officialContents, officialTokens); officialPath != "" {
+	if officialPath := bestEvidenceFile(feature.OfficialNodes, input.officialContents, officialTokens); officialPath != "" {
 		evidence = append(evidence, model.EvidenceRef{
 			RepoSide: "official",
 			FilePath: officialPath,
@@ -419,6 +419,100 @@ func firstMatchingFile(contents map[string]string, tokens []string) string {
 		}
 	}
 	return ""
+}
+
+func bestEvidenceFile(nodes []model.ChainNode, contents map[string]string, tokens []string) string {
+	candidates := matchingFiles(contents, tokens)
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	nodeKindsByFile := make(map[string][]model.NodeKind)
+	for _, node := range nodes {
+		if strings.TrimSpace(node.FilePath) == "" {
+			continue
+		}
+		nodeKindsByFile[node.FilePath] = append(nodeKindsByFile[node.FilePath], node.Kind)
+	}
+
+	slices.SortFunc(candidates, func(a, b string) int {
+		scoreA := evidenceFileScore(a, nodeKindsByFile[a])
+		scoreB := evidenceFileScore(b, nodeKindsByFile[b])
+		if scoreA != scoreB {
+			if scoreA < scoreB {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a, b)
+	})
+
+	return candidates[0]
+}
+
+func matchingFiles(contents map[string]string, tokens []string) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
+
+	files := make([]string, 0)
+	for filePath, content := range contents {
+		if containsAllTokens(content, tokens) {
+			files = append(files, filePath)
+		}
+	}
+	return files
+}
+
+func evidenceFileScore(filePath string, kinds []model.NodeKind) int {
+	score := 0
+	lowerFile := strings.ToLower(filePath)
+
+	if strings.HasSuffix(lowerFile, "_test.go") {
+		score += 100
+	}
+	if strings.Contains(lowerFile, "/testdata/") {
+		score += 200
+	}
+
+	score += bestKindScore(kinds)
+	return score
+}
+
+func bestKindScore(kinds []model.NodeKind) int {
+	if len(kinds) == 0 {
+		return 50
+	}
+
+	best := 50
+	for _, kind := range kinds {
+		score := kindScore(kind)
+		if score < best {
+			best = score
+		}
+	}
+	return best
+}
+
+func kindScore(kind model.NodeKind) int {
+	switch kind {
+	case model.NodeKindService:
+		return 0
+	case model.NodeKindHandler:
+		return 1
+	case model.NodeKindRoute:
+		return 2
+	case model.NodeKindHelper, model.NodeKindTransformer:
+		return 3
+	case model.NodeKindConfig:
+		return 4
+	case model.NodeKindDoc:
+		return 5
+	case model.NodeKindTest:
+		return 10
+	default:
+		return 20
+	}
 }
 
 func firstNodeFile(nodes []model.ChainNode) string {
